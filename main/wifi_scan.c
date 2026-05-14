@@ -351,7 +351,7 @@ static void render_chart_5g(void) {
     for (uint8_t r = 0; r < 6 && start + r < ch5_count; r++) {
         ch5_entry_t *e = &ch5_list[start + r];
         char line[17];
-        snprintf(line, sizeof(line), "%c%3u: %2u  %4ddBm",
+        snprintf(line, sizeof(line), "%c%3u: %2u  %4d",
                  (start + r == chart_5g_sel) ? '>' : ' ',
                  e->ch, e->count, (int)e->rssi);
         ssd1306_draw_string(0, r + 2, line);
