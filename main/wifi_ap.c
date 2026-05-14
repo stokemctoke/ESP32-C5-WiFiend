@@ -250,12 +250,13 @@ static void render_running(void) {
     } else {
         int64_t now = esp_timer_get_time();
         for (uint8_t i = 0; i < count && i < 3; i++) {
-            int64_t age_s = (now - snap[i].connected_at_us) / 1000000;
-            char age[6];
+            int64_t age_s = (now - snap[i].connected_at_us) / 1000000LL;
+            if (age_s < 0) age_s = 0;
+            char age[12];
             if (age_s < 60) {
-                snprintf(age, sizeof(age), "%2llds", age_s);
+                snprintf(age, sizeof(age), "%2us", (uint32_t)age_s);
             } else {
-                snprintf(age, sizeof(age), "%2lldm", age_s / 60);
+                snprintf(age, sizeof(age), "%2um", (uint32_t)(age_s / 60));
             }
             snprintf(line, sizeof(line), " %02X:%02X:%02X %s%s",
                      snap[i].mac[3], snap[i].mac[4], snap[i].mac[5],
