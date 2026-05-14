@@ -77,6 +77,23 @@ void wifi_attack_enter(void) {
     if (target_count > MAX_SCAN_RESULTS) target_count = MAX_SCAN_RESULTS;
     if (scan && target_count > 0) {
         memcpy(targets, scan, sizeof(wifi_ap_info_t) * target_count);
+        return;
+    }
+
+    // No scan results — auto-scan with a cheeky notice
+    ssd1306_clear_buffer();
+    ssd1306_draw_header("Deauth", "lazy scan...");
+    ssd1306_draw_string(0, 3, "Too lazy 2 scan");
+    ssd1306_draw_string(0, 4, "first? Fine...");
+    ssd1306_flush();
+    vTaskDelay(pdMS_TO_TICKS(1500));
+
+    wifi_scan_start();
+
+    scan = wifi_scan_get_results(&target_count);
+    if (target_count > MAX_SCAN_RESULTS) target_count = MAX_SCAN_RESULTS;
+    if (scan && target_count > 0) {
+        memcpy(targets, scan, sizeof(wifi_ap_info_t) * target_count);
     }
 }
 
