@@ -111,7 +111,7 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [ ] WiFi Scanner channel bar chart — 2.4GHz bar graph (encoder scrolls), 5GHz text summary
 - [ ] AP Mode — MAC-derived SSID, NVS-persisted passkey, show connected clients
 - [ ] STA Connect — connect to scanned AP, display IP/status
-- [ ] Deauth Attack — dual-band deauth frame injection engine
+- [x] **Deauth Attack** — AP picker from last scan results; broadcast deauth frame injection via patched libnet80211 + esp_wifi_80211_tx; live stats screen showing target SSID/BSSID, channel, frames sent, pps rate, elapsed time; long-press to stop
 - [ ] Battery power system — TP4056 charger, slide switch, LiPo (v2 hardware build)
 - [ ] RC filter — 100Ω + 10–100nF ceramic caps on encoder CLK/DT (v2 hardware)
 

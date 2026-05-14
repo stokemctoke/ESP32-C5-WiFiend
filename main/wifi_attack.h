@@ -4,22 +4,14 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define MAX_ATTACK_TARGETS 10
-
-typedef struct {
-    uint8_t bssid[6];
-    char ssid[33];
-    uint8_t channel;
-    int8_t rssi;
-    uint32_t packets_sent;
-} attack_target_t;
-
 void wifi_attack_init(void);
-uint16_t wifi_attack_scan_and_filter(int rssi_threshold_24, int rssi_threshold_5);
-const attack_target_t* wifi_attack_get_targets(uint16_t *count);
-bool wifi_attack_start(void);
+void wifi_attack_enter(void);       // load AP list from last scan, enter picker
+bool wifi_attack_has_targets(void);
+void wifi_attack_scroll_up(void);
+void wifi_attack_scroll_down(void);
+void wifi_attack_select(void);      // confirm selected AP and start attack
 void wifi_attack_stop(void);
 bool wifi_attack_is_running(void);
-void wifi_attack_display_status(void);
+void wifi_attack_render(void);      // renders picker or live attack stats
 
 #endif

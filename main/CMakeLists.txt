@@ -23,3 +23,9 @@ idf_component_register(
         esp_adc
         esp_hw_support
 )
+
+# Patched libnet80211 must appear before ESP-IDF's stock version so its
+# symbols take precedence, enabling unrestricted raw deauth frame TX.
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    ${CMAKE_SOURCE_DIR}/patched_libnet/libnet80211.a
+    -Wl,--allow-multiple-definition)
