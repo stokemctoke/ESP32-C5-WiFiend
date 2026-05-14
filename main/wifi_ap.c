@@ -263,7 +263,7 @@ static void render_running(void) {
 
     // Row 3: channel + counts
     char line[24];
-    snprintf(line, sizeof(line), "Ch:%-2u c:%u pw:%u",
+    snprintf(line, sizeof(line), "Ch:%-2u c:%u PW:%u",
              ap_channel, count, cap_count);
     ssd1306_draw_string(0, 3, line);
 
@@ -311,7 +311,7 @@ static void render_running(void) {
                 pw_scroll_offset = 0;
                 pw_scroll_tick   = 0;
             }
-            snprintf(line, sizeof(line), "pw:%-13.13s",
+            snprintf(line, sizeof(line), "PW:%-13.13s",
                      cap->password + pw_scroll_offset);
             ssd1306_draw_string(0, 6, line);
         }
