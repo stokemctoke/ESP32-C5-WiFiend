@@ -7,6 +7,7 @@ idf_component_register(
         battery.c
         menu.c
         wifi_scan.c
+        wifi_sniffer.c
         wifi_ap.c
         wifi_sta.c
         wifi_attack.c

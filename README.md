@@ -104,9 +104,10 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [x] Boot splash — custom WiFiend graphic, fullscreen bitmap on boot
 - [x] First hardware prototype — perfboard v1 built and working (XIAO, OLED, encoder, NeoPixel, WS2812B SMD)
 - [x] **WiFi Scanner** — full active scan across all channels; animated spinner during scan; results sorted by RSSI; scrollable list showing SSID (hidden networks labelled), RSSI, auth mode; encoder-driven scroll with position indicator; AP detail screen: full SSID, BSSID (OUI/NIC split), band (2.4/5GHz), channel, RSSI, auth mode, pairwise cipher, PHY modes (b/g/n/ax), WPS flag
+- [x] **Client Sniffer** — promiscuous mode 802.11 frame sniffing; auto channel-hops 2.4GHz 1–13 (500ms dwell); captures clients from probe requests, association frames, and data frames (ToDS); scrollable client list showing last 3 MAC bytes, RSSI, associated (A) or probe-only (P); detail screen: full client MAC, RSSI, channel, frame count, associated AP BSSID
 
 ### Upcoming
-- [ ] WiFi Client Sniffer — promiscuous mode 802.11 frame sniffing; display client MACs seen in the air, grouped by associated AP BSSID
+- [ ] WiFi Client Sniffer 5GHz — extend channel hop table to include 5GHz channels
 - [ ] WiFi Scanner channel bar chart — 2.4GHz bar graph (encoder scrolls), 5GHz text summary
 - [ ] AP Mode — MAC-derived SSID, NVS-persisted passkey, show connected clients
 - [ ] STA Connect — connect to scanned AP, display IP/status

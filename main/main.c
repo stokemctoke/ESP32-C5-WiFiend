@@ -16,16 +16,20 @@
 #include "wifi_ap.h"
 #include "wifi_sta.h"
 #include "wifi_attack.h"
+#include "wifi_sniffer.h"
 #include "boot_bitmap.h"
 #include "esp_mac.h"
 
 static const char *TAG = "main";
 
-static volatile bool scanner_active = false;
+static volatile bool scanner_active  = false;
+static volatile bool sniffer_active  = false;
 
 // Forward declarations for mutual callback references
 static void encoder_event_handler(encoder_event_t event);
 static void scanner_encoder_handler(encoder_event_t event);
+static void sniffer_encoder_handler(encoder_event_t event);
+static void sniffer_detail_encoder_handler(encoder_event_t event);
 
 static void detail_encoder_handler(encoder_event_t event) {
     if (event == ENCODER_LONG_PRESS) {
@@ -60,6 +64,51 @@ static void scanner_encoder_handler(encoder_event_t event) {
             menu_render();
             break;
     }
+}
+
+static void sniffer_detail_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        wifi_sniff_stop();
+        sniffer_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        encoder_set_callback(sniffer_encoder_handler);
+        wifi_sniff_render();
+    }
+}
+
+static void sniffer_encoder_handler(encoder_event_t event) {
+    switch (event) {
+        case ENCODER_CW:
+            wifi_sniff_scroll_down();
+            wifi_sniff_render();
+            break;
+        case ENCODER_CCW:
+            wifi_sniff_scroll_up();
+            wifi_sniff_render();
+            break;
+        case ENCODER_CLICK:
+            encoder_set_callback(sniffer_detail_encoder_handler);
+            wifi_sniff_render_detail();
+            break;
+        case ENCODER_LONG_PRESS:
+            wifi_sniff_stop();
+            sniffer_active = false;
+            encoder_set_callback(encoder_event_handler);
+            neopixel_set_color(COLOR_GREEN);
+            menu_render();
+            break;
+    }
+}
+
+static void menu_wifi_sniffer(void) {
+    neopixel_set_color(COLOR_MAGENTA);
+    sniffer_active = true;
+    encoder_set_callback(sniffer_encoder_handler);
+    wifi_sniff_start();
+    wifi_sniff_render();
 }
 
 static void menu_wifi_scanner(void) {
@@ -121,11 +170,12 @@ static void menu_device_info(void) {
 }
 
 static menu_item_t main_menu[] = {
-    {.label = "WiFi Scanner", .on_select = menu_wifi_scanner},
-    {.label = "AP Mode",      .on_select = menu_ap_mode},
-    {.label = "Deauth Attack",.on_select = menu_deauth_attack},
-    {.label = "STA Connect",  .on_select = menu_sta_connect},
-    {.label = "Device Info",  .on_select = menu_device_info},
+    {.label = "WiFi Scanner",  .on_select = menu_wifi_scanner},
+    {.label = "Client Sniff",  .on_select = menu_wifi_sniffer},
+    {.label = "AP Mode",       .on_select = menu_ap_mode},
+    {.label = "Deauth Attack", .on_select = menu_deauth_attack},
+    {.label = "STA Connect",   .on_select = menu_sta_connect},
+    {.label = "Device Info",   .on_select = menu_device_info},
 };
 
 static void encoder_event_handler(encoder_event_t event) {
@@ -177,6 +227,7 @@ void app_main(void) {
     neopixel_set_color(COLOR_GREEN);
 
     wifi_scan_init();
+    wifi_sniff_init();
     wifi_ap_init();
     wifi_sta_init();
     wifi_attack_init();
@@ -187,7 +238,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "Boot complete");
 
     while (1) {
-        if (!scanner_active) menu_render();
+        if (!scanner_active && !sniffer_active) menu_render();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
