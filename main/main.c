@@ -269,6 +269,12 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
+    // Default netifs MUST be created before esp_wifi_init() so the default
+    // event handlers (which start DHCP on AP_START) are registered early
+    // enough to handle the first WIFI_EVENT_AP_START.
+    esp_netif_create_default_wifi_sta();
+    esp_netif_create_default_wifi_ap();
+
     ssd1306_init();
     neopixel_init();
     battery_init();

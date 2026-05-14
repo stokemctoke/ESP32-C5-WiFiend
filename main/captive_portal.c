@@ -222,6 +222,7 @@ void captive_portal_start(const char *ssid) {
         ESP_LOGE(TAG, "httpd_start failed");
         return;
     }
+    ESP_LOGI(TAG, "HTTP server listening on port 80");
 
     httpd_uri_t login_post = {
         .uri     = "/login",

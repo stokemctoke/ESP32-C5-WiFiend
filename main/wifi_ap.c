@@ -79,15 +79,6 @@ static void on_client_disconnect(void *arg, esp_event_base_t base,
 
 void wifi_ap_init(void) {
     if (!client_mutex) client_mutex = xSemaphoreCreateMutex();
-
-    // Create default AP netif so DHCP serves IPs to connected clients —
-    // captive portal HTTP server depends on this.
-    static bool netif_created = false;
-    if (!netif_created) {
-        esp_netif_create_default_wifi_ap();
-        netif_created = true;
-    }
-
     ESP_LOGI(TAG, "AP module ready");
 }
 
