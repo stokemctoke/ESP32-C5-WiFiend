@@ -25,6 +25,7 @@ idf_component_register(
         esp_adc
         esp_hw_support
         lwip
+        spi_flash
 )
 
 # Patched libnet80211 must appear before ESP-IDF's stock version so its
