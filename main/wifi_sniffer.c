@@ -200,7 +200,7 @@ void wifi_sniff_render(void) {
     xSemaphoreTake(client_mutex, portMAX_DELAY);
     uint16_t count = client_count;
 
-    char status[16];
+    char status[20];
     snprintf(status, sizeof(status), "Ch:%2u  %3u cli",
              current_chan, count);
     ssd1306_clear_buffer();
@@ -242,12 +242,14 @@ void wifi_sniff_render_detail(void) {
 
     ssd1306_clear_buffer();
 
-    // Yellow zone: full client MAC
-    char line[17];
-    snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X",
-             c.mac[0], c.mac[1], c.mac[2], c.mac[3], c.mac[4], c.mac[5]);
+    // Yellow zone: MAC split across two rows (full MAC is 17 chars, display is 16)
+    char line[20];
+    snprintf(line, sizeof(line), "%02X:%02X:%02X",
+             c.mac[0], c.mac[1], c.mac[2]);
     ssd1306_draw_string(0, 0, line);
-    ssd1306_draw_string(0, 1, "LN>list  Any>lst");
+    snprintf(line, sizeof(line), "%02X:%02X:%02X LN>bk",
+             c.mac[3], c.mac[4], c.mac[5]);
+    ssd1306_draw_string(0, 1, line);
 
     // Blue zone
     snprintf(line, sizeof(line), "RSSI: %d dBm", (int)c.rssi);
