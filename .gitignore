@@ -1,0 +1,17 @@
+# ESP-IDF build output
+build/
+sdkconfig.old
+
+# ESP-IDF managed components (fetched at build time)
+managed_components/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS
+.vscode/
+*.swp
+*~
+.DS_Store
