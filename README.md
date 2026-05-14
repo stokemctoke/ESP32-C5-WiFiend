@@ -4,7 +4,7 @@
 
 # ESP32-C5 WiFiend
 
-![image](https://github.com/stokemctoke/ESP32-C5_WiFiend/blob/feature/wifiend-main/WiFiend_Github-Banner.png)
+![image](https://github.com/stokemctoke/ESP32-C5-WiFiend/blob/master/WiFiend_Github-Banner.png)
 
 > **⚠️ Early Development — Work in Progress**
 > This project is in active early-stage development. Hardware is on its first working perfboard prototype, core firmware is functional but WiFi features are stubbed. Expect breaking changes between commits. Not ready for general use.
