@@ -411,5 +411,5 @@ void wifi_scan_render_chart(void) {
     }
 
     if (chart_is_5g) render_chart_5g();
-    else             render_chart_24_real(count24, best24);
+    else             render_chart_24(count24, best24);
 }
