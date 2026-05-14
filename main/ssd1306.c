@@ -242,6 +242,33 @@ void ssd1306_draw_bitmap_fullscreen(const uint8_t *bitmap) {
     ssd1306_flush();
 }
 
+void ssd1306_fill_rect(uint8_t x, uint8_t y, uint8_t w, uint8_t h) {
+    for (uint8_t col = x; col < x + w && col < 128; col++) {
+        for (uint8_t row = y; row < y + h && row < 64; row++) {
+            fb[row >> 3][col] |= (1u << (row & 7));
+            page_dirty[row >> 3] = true;
+        }
+    }
+}
+
+void ssd1306_hline(uint8_t x, uint8_t y, uint8_t w) {
+    if (y >= 64) return;
+    uint8_t mask = 1u << (y & 7);
+    for (uint8_t col = x; col < x + w && col < 128; col++) {
+        fb[y >> 3][col] |= mask;
+        page_dirty[y >> 3] = true;
+    }
+}
+
+void ssd1306_invert_rect(uint8_t x, uint8_t y, uint8_t w, uint8_t h) {
+    for (uint8_t col = x; col < x + w && col < 128; col++) {
+        for (uint8_t row = y; row < y + h && row < 64; row++) {
+            fb[row >> 3][col] ^= (1u << (row & 7));
+            page_dirty[row >> 3] = true;
+        }
+    }
+}
+
 void ssd1306_flush(void) {
     for (uint8_t p = 0; p < 8; p++) {
         if (page_dirty[p]) {

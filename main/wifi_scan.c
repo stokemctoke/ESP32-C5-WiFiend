@@ -250,3 +250,166 @@ void wifi_scan_render_detail(void) {
 
     ssd1306_flush();
 }
+
+// ---------- channel chart ----------
+
+// Bar chart geometry (pixels, y=0 is top of display)
+#define CHART_LEFT_X   6    // left margin; 13 bars × 9px = 117px, (128-117+1)/2 ≈ 6
+#define CHART_BAR_W    8    // bar width in pixels (one char wide — fits a label)
+#define CHART_BAR_STEP 9    // bar pitch: 8px bar + 1px gap
+#define CHART_BASELINE 55   // y=55 (page 6, bit 7) — bottom of bar area
+#define CHART_TOP_Y    17   // y=17 — maximum bar top (1px into blue zone for breathing room)
+#define CHART_MAX_H   (CHART_BASELINE - CHART_TOP_Y + 1)  // 39 pixels max bar height
+
+typedef struct { uint8_t ch; uint8_t count; int8_t rssi; } ch5_entry_t;
+
+static uint8_t     chart_sel_24 = 1;    // selected 2.4GHz channel (1–13)
+static bool        chart_is_5g  = false;
+static uint8_t     chart_5g_sel = 0;
+static ch5_entry_t ch5_list[MAX_SCAN_RESULTS];
+static uint8_t     ch5_count    = 0;
+
+void wifi_scan_chart_next(void) {
+    if (!chart_is_5g) {
+        chart_sel_24 = (chart_sel_24 < 13) ? chart_sel_24 + 1 : 1;
+    } else if (ch5_count > 0) {
+        chart_5g_sel = (chart_5g_sel + 1) % ch5_count;
+    }
+}
+
+void wifi_scan_chart_prev(void) {
+    if (!chart_is_5g) {
+        chart_sel_24 = (chart_sel_24 > 1) ? chart_sel_24 - 1 : 13;
+    } else if (ch5_count > 0) {
+        chart_5g_sel = (chart_5g_sel == 0) ? ch5_count - 1 : chart_5g_sel - 1;
+    }
+}
+
+void wifi_scan_chart_toggle(void) {
+    chart_is_5g = !chart_is_5g;
+}
+
+static void render_chart_24(uint8_t count[14], int8_t best[14]) {
+    uint8_t max_c = 1;
+    for (uint8_t ch = 1; ch <= 13; ch++) if (count[ch] > max_c) max_c = count[ch];
+
+    ssd1306_clear_buffer();
+
+    char status[20];
+    uint8_t n = count[chart_sel_24];
+    if (n > 0) {
+        snprintf(status, sizeof(status), "2.4G Ch:%2u %uAP", chart_sel_24, n);
+    } else {
+        snprintf(status, sizeof(status), "2.4G Ch:%2u clear", chart_sel_24);
+    }
+    ssd1306_draw_header("Ch Chart", status);
+
+    ssd1306_hline(CHART_LEFT_X, CHART_BASELINE, 13 * CHART_BAR_STEP - 1);
+
+    for (uint8_t ch = 1; ch <= 13; ch++) {
+        if (count[ch] == 0) continue;
+        uint8_t h = (uint8_t)(2 + ((uint16_t)count[ch] * (CHART_MAX_H - 2)) / max_c);
+        if (h > CHART_MAX_H) h = CHART_MAX_H;
+        uint8_t x = CHART_LEFT_X + (ch - 1) * CHART_BAR_STEP;
+        ssd1306_fill_rect(x, CHART_BASELINE - h + 1, CHART_BAR_W, h);
+    }
+
+    for (uint8_t ch = 1; ch <= 13; ch++) {
+        uint8_t x = CHART_LEFT_X + (ch - 1) * CHART_BAR_STEP;
+        char c = (ch <= 9) ? ('0' + ch) : ('A' + ch - 10);
+        ssd1306_draw_char(x, 7, c);
+    }
+
+    // Invert selected channel column in bar area (y=16–55, pages 2–6)
+    {
+        uint8_t x = CHART_LEFT_X + (chart_sel_24 - 1) * CHART_BAR_STEP;
+        ssd1306_invert_rect(x, 16, CHART_BAR_W, 40);
+    }
+
+    ssd1306_flush();
+}
+
+static void render_chart_5g(void) {
+    ssd1306_clear_buffer();
+
+    if (ch5_count == 0) {
+        ssd1306_draw_header("Ch Chart", "5GHz No APs");
+        ssd1306_draw_string(0, 4, " Run WiFi Scan");
+        ssd1306_flush();
+        return;
+    }
+
+    if (chart_5g_sel >= ch5_count) chart_5g_sel = 0;
+
+    char status[20];
+    snprintf(status, sizeof(status), "5GHz Ch:%u %uAP",
+             ch5_list[chart_5g_sel].ch, ch5_list[chart_5g_sel].count);
+    ssd1306_draw_header("Ch Chart", status);
+
+    // Show up to 6 channels; scroll window follows selection
+    uint8_t start = (chart_5g_sel >= 5) ? chart_5g_sel - 4 : 0;
+    for (uint8_t r = 0; r < 6 && start + r < ch5_count; r++) {
+        ch5_entry_t *e = &ch5_list[start + r];
+        char line[17];
+        snprintf(line, sizeof(line), "%c%3u: %2u  %4ddBm",
+                 (start + r == chart_5g_sel) ? '>' : ' ',
+                 e->ch, e->count, (int)e->rssi);
+        ssd1306_draw_string(0, r + 2, line);
+    }
+
+    ssd1306_flush();
+}
+
+void wifi_scan_render_chart(void) {
+    if (result_count == 0) {
+        ssd1306_clear_buffer();
+        ssd1306_draw_header("Ch Chart", "No scan data");
+        ssd1306_draw_string(0, 3, " Run WiFi Scan");
+        ssd1306_draw_string(0, 4, " first");
+        ssd1306_draw_string(0, 6, "CLK=2.4G/5G");
+        ssd1306_draw_string(0, 7, "LN=menu");
+        ssd1306_flush();
+        return;
+    }
+
+    // Build channel tables from scan results in one pass
+    uint8_t count24[14] = {0};
+    int8_t  best24[14];
+    memset(best24, -100, sizeof(best24));
+    ch5_count = 0;
+
+    for (uint16_t i = 0; i < result_count; i++) {
+        uint8_t ch = results[i].channel;
+        if (ch >= 1 && ch <= 13) {
+            count24[ch]++;
+            if (results[i].rssi > best24[ch]) best24[ch] = results[i].rssi;
+        } else if (ch > 14) {
+            bool found = false;
+            for (uint8_t j = 0; j < ch5_count; j++) {
+                if (ch5_list[j].ch == ch) {
+                    ch5_list[j].count++;
+                    if (results[i].rssi > ch5_list[j].rssi) ch5_list[j].rssi = results[i].rssi;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found && ch5_count < MAX_SCAN_RESULTS) {
+                ch5_list[ch5_count++] = (ch5_entry_t){ ch, 1, results[i].rssi };
+            }
+        }
+    }
+
+    // Sort 5GHz list by channel number
+    for (uint8_t i = 0; i < ch5_count; i++) {
+        for (uint8_t j = i + 1; j < ch5_count; j++) {
+            if (ch5_list[j].ch < ch5_list[i].ch) {
+                ch5_entry_t tmp = ch5_list[i];
+                ch5_list[i]     = ch5_list[j];
+                ch5_list[j]     = tmp;
+            }
+        }
+    }
+
+    if (chart_is_5g) render_chart_5g();
+    else             render_chart_24_real(count24, best24);
+}

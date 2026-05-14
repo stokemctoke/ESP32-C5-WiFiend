@@ -28,5 +28,9 @@ void wifi_scan_scroll_up(void);
 void wifi_scan_scroll_down(void);
 void wifi_scan_render(void);
 void wifi_scan_render_detail(void);
+void wifi_scan_chart_next(void);
+void wifi_scan_chart_prev(void);
+void wifi_scan_chart_toggle(void);
+void wifi_scan_render_chart(void);
 
 #endif

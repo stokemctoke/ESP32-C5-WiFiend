@@ -28,6 +28,7 @@ static volatile bool sniffer_active  = false;
 static volatile bool attack_active   = false;
 static volatile bool ap_active       = false;
 static volatile bool sta_active      = false;
+static volatile bool chart_active    = false;
 
 // Forward declarations for mutual callback references
 static void encoder_event_handler(encoder_event_t event);
@@ -36,6 +37,7 @@ static void sniffer_encoder_handler(encoder_event_t event);
 static void sniffer_detail_encoder_handler(encoder_event_t event);
 static void attack_encoder_handler(encoder_event_t event);
 static void ap_encoder_handler(encoder_event_t event);
+static void chart_encoder_handler(encoder_event_t event);
 
 static void detail_encoder_handler(encoder_event_t event) {
     if (event == ENCODER_LONG_PRESS) {
@@ -236,6 +238,36 @@ static void menu_sta_connect(void) {
     wifi_sta_render();
 }
 
+static void chart_encoder_handler(encoder_event_t event) {
+    switch (event) {
+        case ENCODER_CW:
+            wifi_scan_chart_next();
+            wifi_scan_render_chart();
+            break;
+        case ENCODER_CCW:
+            wifi_scan_chart_prev();
+            wifi_scan_render_chart();
+            break;
+        case ENCODER_CLICK:
+            wifi_scan_chart_toggle();
+            wifi_scan_render_chart();
+            break;
+        case ENCODER_LONG_PRESS:
+            chart_active = false;
+            encoder_set_callback(encoder_event_handler);
+            neopixel_set_color(COLOR_GREEN);
+            menu_render();
+            break;
+    }
+}
+
+static void menu_ch_chart(void) {
+    chart_active = true;
+    neopixel_set_color(COLOR_CYAN);
+    encoder_set_callback(chart_encoder_handler);
+    wifi_scan_render_chart();
+}
+
 static void menu_device_info(void) {
     ESP_LOGI(TAG, "Device Info selected");
     uint8_t mac[6];
@@ -260,6 +292,7 @@ static menu_item_t main_menu[] = {
     {.label = "AP Mode",       .on_select = menu_ap_mode},
     {.label = "Deauth Attack", .on_select = menu_deauth_attack},
     {.label = "STA Connect",   .on_select = menu_sta_connect},
+    {.label = "Ch Chart",      .on_select = menu_ch_chart},
     {.label = "Device Info",   .on_select = menu_device_info},
 };
 
@@ -275,7 +308,7 @@ static void encoder_event_handler(encoder_event_t event) {
             break;
         case ENCODER_CLICK:
             menu_select_current();
-            if (!scanner_active && !attack_active && !ap_active && !sta_active) menu_render();
+            if (!scanner_active && !attack_active && !ap_active && !sta_active && !chart_active) menu_render();
             break;
         case ENCODER_LONG_PRESS:
             menu_pop();
@@ -329,7 +362,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "Boot complete");
 
     while (1) {
-        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active) menu_render();
+        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active && !chart_active) menu_render();
         if (attack_active && wifi_attack_is_running()) wifi_attack_render();
         if (ap_active && wifi_ap_is_running()) wifi_ap_render();
         if (sta_active && (wifi_sta_is_connecting() || wifi_sta_needs_refresh())) wifi_sta_render();
