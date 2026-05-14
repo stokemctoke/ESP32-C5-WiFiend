@@ -27,6 +27,7 @@ static volatile bool scanner_active  = false;
 static volatile bool sniffer_active  = false;
 static volatile bool attack_active   = false;
 static volatile bool ap_active       = false;
+static volatile bool sta_active      = false;
 
 // Forward declarations for mutual callback references
 static void encoder_event_handler(encoder_event_t event);
@@ -194,14 +195,45 @@ static void menu_deauth_attack(void) {
     wifi_attack_render();   // show picker (or "run scanner first" if empty)
 }
 
+static void sta_encoder_handler(encoder_event_t event) {
+    switch (event) {
+        case ENCODER_CW:
+            if (wifi_sta_is_in_picker())   wifi_sta_scroll_down();
+            else if (wifi_sta_is_in_password()) wifi_sta_char_next();
+            wifi_sta_render();
+            break;
+        case ENCODER_CCW:
+            if (wifi_sta_is_in_picker())   wifi_sta_scroll_up();
+            else if (wifi_sta_is_in_password()) wifi_sta_char_prev();
+            wifi_sta_render();
+            break;
+        case ENCODER_CLICK:
+            if (wifi_sta_is_in_picker())        wifi_sta_select();
+            else if (wifi_sta_is_in_password()) wifi_sta_char_append();
+            else                                wifi_sta_enter();   // retry from failed/connected
+            wifi_sta_render();
+            break;
+        case ENCODER_LONG_PRESS:
+            if (wifi_sta_is_in_password()) {
+                wifi_sta_pw_cancel();
+                wifi_sta_render();
+            } else {
+                wifi_sta_stop();
+                sta_active = false;
+                encoder_set_callback(encoder_event_handler);
+                neopixel_set_color(COLOR_GREEN);
+                menu_render();
+            }
+            break;
+    }
+}
+
 static void menu_sta_connect(void) {
-    ESP_LOGI(TAG, "STA Connect selected");
+    sta_active = true;
     neopixel_set_color(COLOR_MAGENTA);
-    ssd1306_clear_buffer();
-    ssd1306_draw_header("STA Connect", "Coming soon...");
-    ssd1306_flush();
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    neopixel_set_color(COLOR_GREEN);
+    encoder_set_callback(sta_encoder_handler);
+    wifi_sta_enter();
+    wifi_sta_render();
 }
 
 static void menu_device_info(void) {
@@ -243,7 +275,7 @@ static void encoder_event_handler(encoder_event_t event) {
             break;
         case ENCODER_CLICK:
             menu_select_current();
-            if (!scanner_active && !attack_active && !ap_active) menu_render();
+            if (!scanner_active && !attack_active && !ap_active && !sta_active) menu_render();
             break;
         case ENCODER_LONG_PRESS:
             menu_pop();
@@ -297,9 +329,10 @@ void app_main(void) {
     ESP_LOGI(TAG, "Boot complete");
 
     while (1) {
-        if (!scanner_active && !sniffer_active && !attack_active && !ap_active) menu_render();
+        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active) menu_render();
         if (attack_active && wifi_attack_is_running()) wifi_attack_render();
         if (ap_active && wifi_ap_is_running()) wifi_ap_render();
+        if (sta_active && (wifi_sta_is_connecting() || wifi_sta_needs_refresh())) wifi_sta_render();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
