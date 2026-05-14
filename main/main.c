@@ -196,7 +196,7 @@ static void menu_device_info(void) {
 }
 
 static menu_item_t main_menu[] = {
-    {.label = "WiFi Scanner",  .on_select = menu_wifi_scanner},
+    {.label = "WiFi Scan",     .on_select = menu_wifi_scanner},
     {.label = "Client Sniff",  .on_select = menu_wifi_sniffer},
     {.label = "AP Mode",       .on_select = menu_ap_mode},
     {.label = "Deauth Attack", .on_select = menu_deauth_attack},

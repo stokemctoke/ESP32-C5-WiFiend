@@ -144,7 +144,7 @@ static void render_picker(void) {
 
     if (target_count == 0) {
         ssd1306_draw_header("Deauth", "No scan results");
-        ssd1306_draw_string(0, 3, " Run WiFi Scanner");
+        ssd1306_draw_string(0, 3, " Run WiFi Scan");
         ssd1306_draw_string(0, 4, " first");
         ssd1306_flush();
         return;

@@ -65,7 +65,7 @@ uint16_t wifi_scan_start(void) {
     static const char spin[] = "|/-\\";
     uint8_t frame = 0;
     ssd1306_clear_buffer();
-    ssd1306_draw_header("WiFi Scanner", "Scanning...");
+    ssd1306_draw_header("WiFi Scan", "Scanning...");
     ssd1306_flush();
 
     while (!(xEventGroupGetBits(s_scan_done) & SCAN_DONE_BIT)) {
@@ -169,7 +169,7 @@ void wifi_scan_render(void) {
     ssd1306_clear_buffer();
 
     if (result_count == 0) {
-        ssd1306_draw_header("WiFi Scanner", "No APs found");
+        ssd1306_draw_header("WiFi Scan", "No APs found");
         ssd1306_draw_string(0, 3, " Long>menu");
         ssd1306_flush();
         return;
@@ -179,7 +179,7 @@ void wifi_scan_render(void) {
     snprintf(status, sizeof(status), "%u/%u %s",
              selected_idx + 1, result_count,
              auth_label(results[selected_idx].security));
-    ssd1306_draw_header("WiFi Scanner", status);
+    ssd1306_draw_header("WiFi Scan", status);
 
     for (uint8_t row = 0; row < 6; row++) {
         uint16_t idx = scroll_offset + row;
