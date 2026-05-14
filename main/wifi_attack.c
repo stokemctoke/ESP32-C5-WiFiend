@@ -178,7 +178,7 @@ static void render_running(void) {
     uint32_t pps = packets_sent / (uint32_t)elapsed_s;
 
     // Yellow zone: target SSID + elapsed time
-    char elapsed[9];
+    char elapsed[16];
     int64_t m = elapsed_s / 60;
     int64_t s = elapsed_s % 60;
     snprintf(elapsed, sizeof(elapsed), "%02lld:%02lld", m, s);
