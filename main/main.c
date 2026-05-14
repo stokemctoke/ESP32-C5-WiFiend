@@ -25,6 +25,7 @@ static const char *TAG = "main";
 static volatile bool scanner_active  = false;
 static volatile bool sniffer_active  = false;
 static volatile bool attack_active   = false;
+static volatile bool ap_active       = false;
 
 // Forward declarations for mutual callback references
 static void encoder_event_handler(encoder_event_t event);
@@ -32,6 +33,7 @@ static void scanner_encoder_handler(encoder_event_t event);
 static void sniffer_encoder_handler(encoder_event_t event);
 static void sniffer_detail_encoder_handler(encoder_event_t event);
 static void attack_encoder_handler(encoder_event_t event);
+static void ap_encoder_handler(encoder_event_t event);
 
 static void detail_encoder_handler(encoder_event_t event) {
     if (event == ENCODER_LONG_PRESS) {
@@ -123,14 +125,38 @@ static void menu_wifi_scanner(void) {
     wifi_scan_render();  // shows results or "No APs found" + "Long>menu"
 }
 
+static void ap_encoder_handler(encoder_event_t event) {
+    switch (event) {
+        case ENCODER_CW:
+            wifi_ap_scroll_down();
+            wifi_ap_render();
+            break;
+        case ENCODER_CCW:
+            wifi_ap_scroll_up();
+            wifi_ap_render();
+            break;
+        case ENCODER_CLICK:
+            if (!wifi_ap_is_running()) {
+                wifi_ap_select();       // clone SSID and start AP
+                neopixel_set_color(COLOR_BLUE);
+            }
+            wifi_ap_render();
+            break;
+        case ENCODER_LONG_PRESS:
+            wifi_ap_stop();
+            ap_active = false;
+            encoder_set_callback(encoder_event_handler);
+            neopixel_set_color(COLOR_GREEN);
+            menu_render();
+            break;
+    }
+}
+
 static void menu_ap_mode(void) {
-    ESP_LOGI(TAG, "AP Mode selected");
-    neopixel_set_color(COLOR_CYAN);
-    ssd1306_clear_buffer();
-    ssd1306_draw_header("AP Mode", "Coming soon...");
-    ssd1306_flush();
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    neopixel_set_color(COLOR_GREEN);
+    ap_active = true;
+    encoder_set_callback(ap_encoder_handler);
+    wifi_ap_enter();
+    wifi_ap_render();
 }
 
 static void attack_encoder_handler(encoder_event_t event) {
@@ -216,7 +242,7 @@ static void encoder_event_handler(encoder_event_t event) {
             break;
         case ENCODER_CLICK:
             menu_select_current();
-            if (!scanner_active && !attack_active) menu_render();
+            if (!scanner_active && !attack_active && !ap_active) menu_render();
             break;
         case ENCODER_LONG_PRESS:
             menu_pop();
@@ -264,9 +290,9 @@ void app_main(void) {
     ESP_LOGI(TAG, "Boot complete");
 
     while (1) {
-        if (!scanner_active && !sniffer_active && !attack_active) menu_render();
-        // Refresh attack stats display while running
+        if (!scanner_active && !sniffer_active && !attack_active && !ap_active) menu_render();
         if (attack_active && wifi_attack_is_running()) wifi_attack_render();
+        if (ap_active && wifi_ap_is_running()) wifi_ap_render();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

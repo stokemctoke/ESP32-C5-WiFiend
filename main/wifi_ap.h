@@ -5,10 +5,12 @@
 #include <stdbool.h>
 
 void wifi_ap_init(void);
-void wifi_ap_start(void);
+void wifi_ap_enter(void);       // load SSID picker from last scan
+void wifi_ap_scroll_up(void);
+void wifi_ap_scroll_down(void);
+void wifi_ap_select(void);      // confirm SSID clone and start AP
 void wifi_ap_stop(void);
 bool wifi_ap_is_running(void);
-uint8_t wifi_ap_get_client_count(void);
-void wifi_ap_display_status(void);
+void wifi_ap_render(void);      // picker or live client screen
 
 #endif

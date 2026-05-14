@@ -109,7 +109,7 @@ idf.py -p /dev/ttyACM0 flash monitor
 ### Upcoming
 - [ ] WiFi Client Sniffer 5GHz — extend channel hop table to include 5GHz channels
 - [ ] WiFi Scanner channel bar chart — 2.4GHz bar graph (encoder scrolls), 5GHz text summary
-- [ ] AP Mode — MAC-derived SSID, NVS-persisted passkey, show connected clients
+- [x] **AP Mode (Evil Twin)** — SSID picker clones any nearby AP; open network on same channel; auto-scans if no results; live client screen shows IP, channel, connected MACs with [NEW] tag and age; long-press stops and restores STA mode
 - [ ] STA Connect — connect to scanned AP, display IP/status
 - [x] **Deauth Attack** — AP picker from last scan results; broadcast deauth frame injection via patched libnet80211 + esp_wifi_80211_tx; live stats screen showing target SSID/BSSID, channel, frames sent, pps rate, elapsed time; long-press to stop
 - [ ] Battery power system — TP4056 charger, slide switch, LiPo (v2 hardware build)
