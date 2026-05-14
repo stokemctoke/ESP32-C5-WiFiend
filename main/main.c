@@ -23,6 +23,7 @@
 #include "esp_wifi.h"
 #include "esp_timer.h"
 #include "esp_flash.h"
+#include "esp_chip_info.h"
 
 static const char *TAG = "main";
 
