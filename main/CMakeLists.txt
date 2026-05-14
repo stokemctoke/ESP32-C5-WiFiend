@@ -11,6 +11,7 @@ idf_component_register(
         wifi_ap.c
         wifi_sta.c
         wifi_attack.c
+        captive_portal.c
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         nvs_flash
@@ -18,10 +19,12 @@ idf_component_register(
         esp_netif
         esp_event
         esp_timer
+        esp_http_server
         driver
         led_strip
         esp_adc
         esp_hw_support
+        lwip
 )
 
 # Patched libnet80211 must appear before ESP-IDF's stock version so its
