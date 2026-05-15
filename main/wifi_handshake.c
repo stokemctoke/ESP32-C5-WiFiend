@@ -446,13 +446,14 @@ static void render_hunting(void) {
     tick++;
 
     ssd1306_clear_buffer();
-    char status[16];
+    char status[32];
     if (deauth_active) {
         snprintf(status, sizeof(status), "DEAUTH %u", (unsigned)deauth_sent);
     } else {
         snprintf(status, sizeof(status), "M1:%u M2:%u",
                  (unsigned)m1_seen, (unsigned)m2_seen);
     }
+    status[15] = '\0';
     ssd1306_draw_header("HANDSHK", status);
 
     char line[17];
@@ -509,11 +510,13 @@ static void render_captured(void) {
     ssd1306_draw_string(0, 6, "Saved /lfs");
 
     if (cap_count > 1) {
-        snprintf(line, sizeof(line), "%u/%u CK>nxt LN>X", view_idx + 1, cap_count);
+        char tmp[32];
+        snprintf(tmp, sizeof(tmp), "%u/%u CK>nxt LN>X", view_idx + 1, cap_count);
+        tmp[16] = '\0';
+        ssd1306_draw_string(0, 7, tmp);
     } else {
-        snprintf(line, sizeof(line), "LN>back");
+        ssd1306_draw_string(0, 7, "LN>back");
     }
-    ssd1306_draw_string(0, 7, line);
     ssd1306_flush();
 }
 
