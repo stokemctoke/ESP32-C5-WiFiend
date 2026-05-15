@@ -11,6 +11,7 @@ idf_component_register(
         wifi_ap.c
         wifi_sta.c
         wifi_attack.c
+        wifi_pmkid.c
         captive_portal.c
     INCLUDE_DIRS "."
     PRIV_REQUIRES
@@ -26,6 +27,7 @@ idf_component_register(
         esp_hw_support
         lwip
         spi_flash
+        esp_littlefs
 )
 
 # Patched libnet80211 must appear before ESP-IDF's stock version so its
