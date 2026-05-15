@@ -11,9 +11,12 @@ static const char *TAG = "captures";
 #define MAX_CAPTURE_ENTRIES 32
 #define PMKID_LOG_PATH      "/lfs/pmkid.log"
 #define HANDSHAKE_LOG_PATH  "/lfs/handshakes.log"
+#define PMKID_TMP_PATH      "/lfs/pmkid.tmp"
+#define HANDSHAKE_TMP_PATH  "/lfs/handshakes.tmp"
 
 typedef enum {
     CAP_VIEW_LIST = 0,
+    CAP_VIEW_DETAIL,
     CAP_VIEW_DUMPING,
     CAP_VIEW_CONFIRM_CLEAR,
 } cap_view_t;
@@ -22,15 +25,25 @@ typedef struct {
     char    type;        // 'P' = PMKID, 'H' = Handshake
     char    ssid[17];
     uint8_t bssid[6];
+    uint8_t client_mac[6];
 } cap_entry_t;
 
+#define DETAIL_ACTION_COUNT 3
+static const char *detail_action_label[DETAIL_ACTION_COUNT] = {
+    "Dump to Serial",
+    "Delete this",
+    "Back",
+};
+
 static cap_entry_t entries[MAX_CAPTURE_ENTRIES];
-static uint16_t    entry_count   = 0;
-static uint16_t    pmkid_count   = 0;
-static uint16_t    hshk_count    = 0;
-static uint16_t    selected_idx  = 0;
-static uint16_t    scroll_offset = 0;
-static cap_view_t  view_state    = CAP_VIEW_LIST;
+static uint16_t    entry_count       = 0;
+static uint16_t    pmkid_count       = 0;
+static uint16_t    hshk_count        = 0;
+static uint16_t    selected_idx      = 0;
+static uint16_t    scroll_offset     = 0;
+static uint16_t    detail_entry_idx  = 0;
+static uint8_t     detail_action_idx = 0;
+static cap_view_t  view_state        = CAP_VIEW_LIST;
 
 static volatile bool active  = false;
 static volatile bool refresh = false;
@@ -44,33 +57,40 @@ static int hex_nibble(char c) {
     return -1;
 }
 
-// Parse a hashcat-22000 line: WPA*TT*MIC*BSSID*CLIENT*SSID_HEX*...
-// Extracts BSSID and SSID (decoded from hex) into `out`.
+// Parse hashcat-22000: WPA*TT*MIC*BSSID*CLIENT*SSID_HEX*...
 static bool parse_line(const char *line, cap_entry_t *out, char type) {
     int         star = 0;
-    const char *bssid_start = NULL, *bssid_end = NULL;
-    const char *ssid_start  = NULL, *ssid_end  = NULL;
+    const char *bssid_start  = NULL, *bssid_end  = NULL;
+    const char *client_start = NULL, *client_end = NULL;
+    const char *ssid_start   = NULL, *ssid_end   = NULL;
     const char *p = line;
 
     while (*p && *p != '\n' && *p != '\r') {
         if (*p == '*') {
             star++;
-            if      (star == 3) bssid_start = p + 1;
-            else if (star == 4) { bssid_end = p; ssid_start = NULL; }
-            else if (star == 5) ssid_start = p + 1;
-            else if (star == 6) { ssid_end = p; break; }
+            if      (star == 3) bssid_start  = p + 1;
+            else if (star == 4) { bssid_end  = p; client_start = p + 1; }
+            else if (star == 5) { client_end = p; ssid_start   = p + 1; }
+            else if (star == 6) { ssid_end   = p; break; }
         }
         p++;
     }
     if (!ssid_end) ssid_end = p;
-    if (!bssid_start || !bssid_end || !ssid_start) return false;
-    if (bssid_end - bssid_start != 12) return false;
+    if (!bssid_start || !bssid_end || !client_start || !client_end || !ssid_start) return false;
+    if (bssid_end  - bssid_start  != 12) return false;
+    if (client_end - client_start != 12) return false;
 
     for (int i = 0; i < 6; i++) {
         int hi = hex_nibble(bssid_start[i * 2]);
         int lo = hex_nibble(bssid_start[i * 2 + 1]);
         if (hi < 0 || lo < 0) return false;
         out->bssid[i] = (uint8_t)((hi << 4) | lo);
+    }
+    for (int i = 0; i < 6; i++) {
+        int hi = hex_nibble(client_start[i * 2]);
+        int lo = hex_nibble(client_start[i * 2 + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out->client_mac[i] = (uint8_t)((hi << 4) | lo);
     }
 
     int ssid_hex_len = (int)(ssid_end - ssid_start);
@@ -85,6 +105,13 @@ static bool parse_line(const char *line, cap_entry_t *out, char type) {
     out->ssid[ssid_len] = '\0';
     out->type           = type;
     return true;
+}
+
+static bool line_matches_entry(const char *line, const cap_entry_t *e) {
+    cap_entry_t tmp;
+    if (!parse_line(line, &tmp, e->type)) return false;
+    return memcmp(tmp.bssid,      e->bssid,      6) == 0 &&
+           memcmp(tmp.client_mac, e->client_mac, 6) == 0;
 }
 
 static void load_file(const char *path, char type, uint16_t *count_out) {
@@ -110,13 +137,12 @@ static void load_captures(void) {
     load_file(HANDSHAKE_LOG_PATH, 'H', &hshk_count);
 }
 
+// ---------- dump / delete ----------
+
 static void dump_file(const char *path, const char *label) {
     printf("\n===== %s (%s) =====\n", label, path);
     FILE *fp = fopen(path, "r");
-    if (!fp) {
-        printf("(no file)\n");
-        return;
-    }
+    if (!fp) { printf("(no file)\n"); return; }
     char buf[768];
     int  n = 0;
     while (fgets(buf, sizeof(buf), fp)) {
@@ -130,13 +156,61 @@ static void dump_file(const char *path, const char *label) {
 
 static void dump_all_to_serial(void) {
     printf("\n\n========================================\n");
-    printf("  WiFiend Captures Dump\n");
+    printf("  WiFiend Captures Dump (ALL)\n");
     printf("========================================\n");
     dump_file(PMKID_LOG_PATH,     "PMKID Captures");
     dump_file(HANDSHAKE_LOG_PATH, "Handshake Captures");
     printf("========================================\n");
-    printf("  Dump complete. Copy lines above.\n");
+    printf("  End of dump. Copy lines above.\n");
     printf("========================================\n\n");
+}
+
+static void dump_one_to_serial(const cap_entry_t *e) {
+    const char *path  = (e->type == 'P') ? PMKID_LOG_PATH : HANDSHAKE_LOG_PATH;
+    const char *label = (e->type == 'P') ? "PMKID" : "Handshake";
+
+    printf("\n\n========================================\n");
+    printf("  WiFiend Capture (single)\n");
+    printf("  Type: %s   SSID: %s\n", label, e->ssid);
+    printf("========================================\n");
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        printf("(no file)\n");
+    } else {
+        char buf[768];
+        int  n = 0;
+        while (fgets(buf, sizeof(buf), fp)) {
+            if (line_matches_entry(buf, e)) {
+                printf("%s", buf);
+                if (buf[strlen(buf) - 1] != '\n') printf("\n");
+                n++;
+            }
+        }
+        fclose(fp);
+        printf("===== %d matching line(s) =====\n", n);
+    }
+    printf("========================================\n\n");
+}
+
+static void delete_one(const cap_entry_t *e) {
+    const char *path     = (e->type == 'P') ? PMKID_LOG_PATH     : HANDSHAKE_LOG_PATH;
+    const char *tmp_path = (e->type == 'P') ? PMKID_TMP_PATH     : HANDSHAKE_TMP_PATH;
+
+    FILE *in = fopen(path, "r");
+    if (!in) return;
+    FILE *out = fopen(tmp_path, "w");
+    if (!out) { fclose(in); return; }
+
+    char buf[768];
+    while (fgets(buf, sizeof(buf), in)) {
+        if (!line_matches_entry(buf, e)) {
+            fputs(buf, out);
+        }
+    }
+    fclose(in);
+    fclose(out);
+    remove(path);
+    rename(tmp_path, path);
 }
 
 static void clear_all(void) {
@@ -155,30 +229,37 @@ void wifi_captures_init(void) {
 
 void wifi_captures_enter(void) {
     load_captures();
-    selected_idx  = 0;
-    scroll_offset = 0;
-    view_state    = CAP_VIEW_LIST;
-    active        = true;
-    refresh       = true;
+    selected_idx      = 0;
+    scroll_offset     = 0;
+    detail_action_idx = 0;
+    view_state        = CAP_VIEW_LIST;
+    active            = true;
+    refresh           = true;
 }
 
-// Total selectable rows = entries + 2 action items (Dump, Clear)
+// Total list rows = entries + 2 actions (Dump All, Clear All)
 static uint16_t total_rows(void) { return entry_count + 2; }
 
 void wifi_captures_scroll_up(void) {
-    if (view_state != CAP_VIEW_LIST) return;
-    if (selected_idx > 0) {
-        selected_idx--;
-        if (selected_idx < scroll_offset) scroll_offset = selected_idx;
+    if (view_state == CAP_VIEW_LIST) {
+        if (selected_idx > 0) {
+            selected_idx--;
+            if (selected_idx < scroll_offset) scroll_offset = selected_idx;
+        }
+    } else if (view_state == CAP_VIEW_DETAIL) {
+        if (detail_action_idx > 0) detail_action_idx--;
     }
     refresh = true;
 }
 
 void wifi_captures_scroll_down(void) {
-    if (view_state != CAP_VIEW_LIST) return;
-    if (selected_idx + 1 < total_rows()) {
-        selected_idx++;
-        if (selected_idx >= scroll_offset + 6) scroll_offset = selected_idx - 5;
+    if (view_state == CAP_VIEW_LIST) {
+        if (selected_idx + 1 < total_rows()) {
+            selected_idx++;
+            if (selected_idx >= scroll_offset + 6) scroll_offset = selected_idx - 5;
+        }
+    } else if (view_state == CAP_VIEW_DETAIL) {
+        if (detail_action_idx + 1 < DETAIL_ACTION_COUNT) detail_action_idx++;
     }
     refresh = true;
 }
@@ -190,10 +271,48 @@ void wifi_captures_select(void) {
         refresh    = true;
         return;
     }
+
+    if (view_state == CAP_VIEW_DETAIL) {
+        cap_entry_t *e = &entries[detail_entry_idx];
+        switch (detail_action_idx) {
+            case 0:  // Dump to Serial
+                view_state = CAP_VIEW_DUMPING;
+                refresh    = true;
+                wifi_captures_render();
+                dump_one_to_serial(e);
+                view_state = CAP_VIEW_DETAIL;
+                refresh    = true;
+                break;
+            case 1:  // Delete this
+                delete_one(e);
+                load_captures();
+                if (entry_count == 0) {
+                    selected_idx = 0;
+                } else if (selected_idx >= entry_count) {
+                    selected_idx = entry_count - 1;
+                }
+                if (selected_idx < scroll_offset) scroll_offset = selected_idx;
+                view_state = CAP_VIEW_LIST;
+                refresh    = true;
+                break;
+            case 2:  // Back
+                view_state = CAP_VIEW_LIST;
+                refresh    = true;
+                break;
+        }
+        return;
+    }
+
     if (view_state != CAP_VIEW_LIST) return;
 
-    if (selected_idx == entry_count) {
-        // "Dump Serial"
+    if (selected_idx < entry_count) {
+        // Open per-entry detail
+        detail_entry_idx  = selected_idx;
+        detail_action_idx = 0;
+        view_state        = CAP_VIEW_DETAIL;
+        refresh           = true;
+    } else if (selected_idx == entry_count) {
+        // "Dump All Serial"
         view_state = CAP_VIEW_DUMPING;
         refresh    = true;
         wifi_captures_render();
@@ -205,7 +324,15 @@ void wifi_captures_select(void) {
         view_state = CAP_VIEW_CONFIRM_CLEAR;
         refresh    = true;
     }
-    // selecting an entry row: no detail view (lines are too long for OLED)
+}
+
+bool wifi_captures_back(void) {
+    if (view_state == CAP_VIEW_DETAIL || view_state == CAP_VIEW_CONFIRM_CLEAR) {
+        view_state = CAP_VIEW_LIST;
+        refresh    = true;
+        return false;
+    }
+    return true;
 }
 
 void wifi_captures_stop(void) {
@@ -239,7 +366,7 @@ static void render_list(void) {
                      (idx == selected_idx) ? '>' : ' ',
                      e->type, ssid);
         } else if (idx == entry_count) {
-            snprintf(line, sizeof(line), "%c[Dump Serial]",
+            snprintf(line, sizeof(line), "%c[Dump All Ser]",
                      (idx == selected_idx) ? '>' : ' ');
         } else {
             snprintf(line, sizeof(line), "%c[Clear All]",
@@ -249,11 +376,38 @@ static void render_list(void) {
         ssd1306_draw_string(0, row + 2, line);
     }
 
-    if (entry_count == 0 && total_rows() <= 6) {
-        ssd1306_draw_string(0, 7, "LN>back");
-    } else {
-        ssd1306_draw_string(0, 7, "CK>act LN>back");
+    ssd1306_draw_string(0, 7, "CK>act LN>back");
+    ssd1306_flush();
+}
+
+static void render_detail(void) {
+    ssd1306_clear_buffer();
+    cap_entry_t *e = &entries[detail_entry_idx];
+
+    char status[16];
+    snprintf(status, sizeof(status), "%c %u/%u",
+             e->type, (unsigned)(detail_entry_idx + 1), (unsigned)entry_count);
+    ssd1306_draw_header("DETAIL", status);
+
+    char line[32];
+    const char *ssid = e->ssid[0] ? e->ssid : "(hidden)";
+    snprintf(line, sizeof(line), "%.16s", ssid);
+    ssd1306_draw_string(0, 2, line);
+
+    snprintf(line, sizeof(line), "%02x%02x%02x%02x%02x%02x",
+             e->bssid[0], e->bssid[1], e->bssid[2],
+             e->bssid[3], e->bssid[4], e->bssid[5]);
+    ssd1306_draw_string(0, 3, line);
+
+    for (uint8_t i = 0; i < DETAIL_ACTION_COUNT; i++) {
+        snprintf(line, sizeof(line), "%c%s",
+                 (i == detail_action_idx) ? '>' : ' ',
+                 detail_action_label[i]);
+        line[16] = '\0';
+        ssd1306_draw_string(0, 4 + i, line);
     }
+
+    ssd1306_draw_string(0, 7, "CK>act LN>back");
     ssd1306_flush();
 }
 
@@ -283,6 +437,7 @@ static void render_confirm_clear(void) {
 void wifi_captures_render(void) {
     switch (view_state) {
         case CAP_VIEW_LIST:          render_list();          break;
+        case CAP_VIEW_DETAIL:        render_detail();        break;
         case CAP_VIEW_DUMPING:       render_dumping();       break;
         case CAP_VIEW_CONFIRM_CLEAR: render_confirm_clear(); break;
     }

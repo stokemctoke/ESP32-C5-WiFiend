@@ -367,11 +367,15 @@ static void captures_encoder_handler(encoder_event_t event) {
             wifi_captures_render();
             break;
         case ENCODER_LONG_PRESS:
-            wifi_captures_stop();
-            captures_active = false;
-            encoder_set_callback(encoder_event_handler);
-            neopixel_set_color(COLOR_GREEN);
-            menu_render();
+            if (wifi_captures_back()) {
+                wifi_captures_stop();
+                captures_active = false;
+                encoder_set_callback(encoder_event_handler);
+                neopixel_set_color(COLOR_GREEN);
+                menu_render();
+            } else {
+                wifi_captures_render();
+            }
             break;
     }
 }
