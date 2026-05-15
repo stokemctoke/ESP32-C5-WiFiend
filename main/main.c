@@ -33,6 +33,7 @@ static volatile bool attack_active   = false;
 static volatile bool ap_active       = false;
 static volatile bool sta_active      = false;
 static volatile bool chart_active    = false;
+static volatile bool info_active     = false;
 
 // Forward declarations for mutual callback references
 static void encoder_event_handler(encoder_event_t event);
@@ -42,6 +43,8 @@ static void sniffer_detail_encoder_handler(encoder_event_t event);
 static void attack_encoder_handler(encoder_event_t event);
 static void ap_encoder_handler(encoder_event_t event);
 static void chart_encoder_handler(encoder_event_t event);
+static void info_encoder_handler(encoder_event_t event);
+static void info_render(void);
 
 static void detail_encoder_handler(encoder_event_t event) {
     if (event == ENCODER_LONG_PRESS) {
@@ -272,7 +275,7 @@ static void menu_ch_chart(void) {
     wifi_scan_render_chart();
 }
 
-static void menu_device_info(void) {
+static void info_render(void) {
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
@@ -332,7 +335,25 @@ static void menu_device_info(void) {
     ssd1306_draw_string(0, 7, line);
 
     ssd1306_flush();
-    vTaskDelay(pdMS_TO_TICKS(5000));
+}
+
+static void info_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        info_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        // CW / CCW / CLICK all refresh the screen (heap and uptime tick)
+        info_render();
+    }
+}
+
+static void menu_device_info(void) {
+    info_active = true;
+    neopixel_set_color(COLOR_WHITE);
+    encoder_set_callback(info_encoder_handler);
+    info_render();
 }
 
 static menu_item_t main_menu[] = {
@@ -357,7 +378,7 @@ static void encoder_event_handler(encoder_event_t event) {
             break;
         case ENCODER_CLICK:
             menu_select_current();
-            if (!scanner_active && !attack_active && !ap_active && !sta_active && !chart_active) menu_render();
+            if (!scanner_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active) menu_render();
             break;
         case ENCODER_LONG_PRESS:
             menu_pop();
@@ -411,7 +432,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "Boot complete");
 
     while (1) {
-        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active && !chart_active) menu_render();
+        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active) menu_render();
         if (attack_active && wifi_attack_is_running()) wifi_attack_render();
         if (ap_active && wifi_ap_is_running()) wifi_ap_render();
         if (sta_active && (wifi_sta_is_connecting() || wifi_sta_needs_refresh())) wifi_sta_render();
