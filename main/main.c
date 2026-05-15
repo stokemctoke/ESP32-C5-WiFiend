@@ -281,48 +281,54 @@ static void menu_device_info(void) {
     ssd1306_clear_buffer();
     ssd1306_draw_header("Device Info", hdr);
 
-    char line[17];
+    // Buffer larger than display width so snprintf never sees a truncation
+    // risk; we hard-terminate at 16 chars before drawing.
+    char line[32];
 
-    // Row 2: full MAC compact (no colons — 16 chars exactly)
     snprintf(line, sizeof(line), "MAC:%02X%02X%02X%02X%02X%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    line[16] = '\0';
     ssd1306_draw_string(0, 2, line);
 
-    // Row 3: free heap
-    snprintf(line, sizeof(line), "Heap:%5luKB", esp_get_free_heap_size() / 1024);
+    snprintf(line, sizeof(line), "Heap:%lu KB",
+             (unsigned long)(esp_get_free_heap_size() / 1024));
+    line[16] = '\0';
     ssd1306_draw_string(0, 3, line);
 
-    // Row 4: flash size
     uint32_t flash_size = 0;
     esp_flash_get_size(NULL, &flash_size);
-    snprintf(line, sizeof(line), "Flash:%4luMB", (unsigned long)(flash_size / (1024 * 1024)));
+    snprintf(line, sizeof(line), "Flash:%lu MB",
+             (unsigned long)(flash_size / (1024 * 1024)));
+    line[16] = '\0';
     ssd1306_draw_string(0, 4, line);
 
-    // Row 5: chip revision + IDF version (first 5 chars)
     esp_chip_info_t chip;
     esp_chip_info(&chip);
-    snprintf(line, sizeof(line), "Rev:%-2d IDF:%.5s", chip.revision, esp_get_idf_version());
+    snprintf(line, sizeof(line), "Rev:%d IDF:%s",
+             chip.revision, esp_get_idf_version());
+    line[16] = '\0';
     ssd1306_draw_string(0, 5, line);
 
-    // Row 6: uptime
     int64_t up_s = esp_timer_get_time() / 1000000LL;
+    if (up_s < 0) up_s = 0;
     int up_d  = (int)(up_s / 86400);
-    int up_h  = (int)((up_s % 86400) / 3600);
-    int up_m  = (int)((up_s % 3600) / 60);
+    int up_h  = (int)((up_s / 3600) % 24);
+    int up_m  = (int)((up_s / 60) % 60);
     int up_sc = (int)(up_s % 60);
     if (up_d > 0)
         snprintf(line, sizeof(line), "Up:%dd %02dh%02dm", up_d, up_h, up_m);
     else
         snprintf(line, sizeof(line), "Up:%02dh %02dm %02ds", up_h, up_m, up_sc);
+    line[16] = '\0';
     ssd1306_draw_string(0, 6, line);
 
-    // Row 7: WiFi mode
     wifi_mode_t wmode = WIFI_MODE_NULL;
     esp_wifi_get_mode(&wmode);
-    const char *ms = (wmode == WIFI_MODE_STA)   ? "STA"    :
+    const char *ms = (wmode == WIFI_MODE_STA)    ? "STA"    :
                      (wmode == WIFI_MODE_AP)     ? "AP"     :
                      (wmode == WIFI_MODE_APSTA)  ? "AP+STA" : "None";
     snprintf(line, sizeof(line), "WiFi: %s", ms);
+    line[16] = '\0';
     ssd1306_draw_string(0, 7, line);
 
     ssd1306_flush();
