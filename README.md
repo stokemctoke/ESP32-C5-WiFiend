@@ -6,12 +6,12 @@
 
 ![image](https://github.com/stokemctoke/ESP32-C5-WiFiend/blob/master/WiFiend_Github-Banner.png)
 
-> **⚠️ Early Development — Work in Progress**
-> This project is in active early-stage development. Hardware is on its first working perfboard prototype, core firmware is functional but WiFi features are stubbed. Expect breaking changes between commits. Not ready for general use.
+> **⚠️ Active Development**
+> The WiFi feature set is functional and field-tested on the perfboard prototype. Polishing and transfer-method work in progress. Expect occasional breaking changes between commits. Not yet ready for general distribution.
 
-An interactive, menu-driven WiFi hacking handheld built on the XIAO ESP32-C5. Navigate modes with a rotary encoder, monitor status on a 0.96" OLED, and control everything from a compact perfboard build powered by a 3.7V LiPo.
+An interactive, menu-driven WiFi pen-testing handheld built on the XIAO ESP32-C5. Navigate modes with a rotary encoder, monitor status on a 0.96" OLED, and control everything from a compact perfboard build powered by a 3.7V LiPo.
 
-Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame injection engine, channel scanner, AP mode, and STA connect — all menu-driven from a single rotary encoder.
+Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame injection engine, channel scanner, client sniffer, evil-twin AP with captive portal, STA connect, PMKID capture, WPA handshake capture, and on-device capture management — all menu-driven from a single rotary encoder. Captures are written to LittleFS on the 8MB flash and exportable in hashcat-22000 format.
 
 ---
 
@@ -58,15 +58,20 @@ The 0.96" SSD1306 has a yellow/blue physical colour split. The firmware uses thi
 │ WiFiend      USB │    title left, battery/power right
 │                  │    contextual status line
 ├──────────────────┤  ← blue zone (pages 2–7, bottom 48px)
-│ > WiFi Scanner   │
-│   AP Mode        │    menu items / screen content
+│ > WiFi Scan      │
+│   Client Sniff   │    menu items / screen content
+│   AP Mode        │
 │   Deauth Attack  │
 │   STA Connect    │
+│   PMKID Capture  │
+│   Handshake Cap  │
+│   Captures       │
+│   Ch Chart       │
 │   Device Info    │
 └──────────────────┘
 ```
 
-NeoPixel colour per mode: green = idle, yellow = scanning in progress, cyan = scanner results/detail, red = deauth, magenta = STA connect.
+NeoPixel colour per mode: green = idle, yellow = scanning / hunting, cyan = results / captures view, red = deauth, magenta = STA connect.
 
 ---
 
@@ -94,6 +99,8 @@ idf.py -p /dev/ttyACM0 flash monitor
 ## Progress
 
 ### Done
+
+**Platform / Hardware**
 - [x] Project scaffold — ESP-IDF v5.5.1, ESP32-C5 target, patched libnet80211.a wired in
 - [x] SSD1306 OLED driver — dirty-page framebuffer, new I2C master API
 - [x] OLED header layout — yellow zone: title + power indicator + contextual status; blue zone: content
@@ -103,21 +110,47 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [x] EC11 rotary encoder — PCNT quadrature decoding, 10µs glitch filter, polled SW with 20ms debounce
 - [x] Boot splash — custom WiFiend graphic, fullscreen bitmap on boot
 - [x] First hardware prototype — perfboard v1 built and working (XIAO, OLED, encoder, NeoPixel, WS2812B SMD)
+- [x] **8MB flash + LittleFS** — custom partition table (3MB factory app + 4.9MB LittleFS storage). Capture logs persist across power cycles.
+
+**WiFi Reconnaissance**
 - [x] **WiFi Scanner** — full active scan across all channels; animated spinner during scan; results sorted by RSSI; scrollable list showing SSID (hidden networks labelled), RSSI, auth mode; encoder-driven scroll with position indicator; AP detail screen: full SSID, BSSID (OUI/NIC split), band (2.4/5GHz), channel, RSSI, auth mode, pairwise cipher, PHY modes (b/g/n/ax), WPS flag
 - [x] **Client Sniffer** — promiscuous mode 802.11 frame sniffing; auto channel-hops 2.4GHz 1–13 (500ms dwell); captures clients from probe requests, association frames, and data frames (ToDS); scrollable client list showing last 3 MAC bytes, RSSI, associated (A) or probe-only (P); detail screen: full client MAC, RSSI, channel, frame count, associated AP BSSID
+- [x] **Channel Chart** — 2.4GHz channel occupancy bar chart showing AP density per channel
+
+**WiFi Attack**
+- [x] **Deauth Attack** — AP picker from last scan results; broadcast deauth frame injection via patched libnet80211 + esp_wifi_80211_tx; live stats screen showing target SSID/BSSID, channel, frames sent, pps rate, elapsed time; long-press to stop
+- [x] **AP Mode (Evil Twin) + Captive Portal** — SSID picker clones any nearby AP; open network on same channel; auto-scans if no results; live client screen shows IP, channel, connected MACs with [NEW] tag and age. DNS hijacker on UDP/53 resolves all hostnames to the device. HTTP server serves a polished login page mimicking iOS/Android system captive portals. Submitted passwords are captured, logged to serial, and displayed prominently on the OLED. Long-press stops AP and restores STA mode.
+- [x] **STA Connect** — connect to a scanned AP using a stored or entered passphrase; live status with IP, RSSI, gateway
+
+**WiFi Cracking Captures**
+- [x] **PMKID Capture** — forged auth + association request elicits EAPOL M1 from the target AP; RSN IE PMKID extraction; result saved as a hashcat-22000 line (`WPA*02*…`) to `/lfs/pmkid.log`; 30-attempt task with live progress; deduplicated by PMKID hash
+- [x] **WPA Handshake Capture** — passive listen for EAPOL M1+M2 between real clients and a target AP; pairs by replay counter; reconstructs the M2 EAPOL frame with MIC zeroed; saves a hashcat-22000 line (`WPA*02*MIC*…*ANONCE*EAPOL*MP`) to `/lfs/handshakes.log`. CLICK during hunting fires a 48-frame deauth burst (alternating broadcast + targeted) to force re-authentication. Header shows live `M1:x M2:y` counters.
+- [x] **Captures Menu** — on-device viewer for all saved PMKID and handshake captures; parses each hashcat line for SSID + BSSID + client MAC. Per-entry detail sheet with **Dump to Serial** (single capture's hashcat line via USB-Serial-JTAG CDC, ready to paste into hashcat) and **Delete this** (rewrites log in place). Bulk actions: **Dump All Serial** and **Clear All** (with confirmation).
+
+**Other**
+- [x] **Device Info** — stateful screen showing MAC, free heap, flash size, chip revision, IDF version, uptime, WiFi mode
 
 ### Upcoming
+
+**Transfer methods** (reusable across all on-device capture features)
+- [ ] HTTP server — serve `/lfs/*.log` over AP mode at 192.168.4.1, with a per-entry route for individual captures; integrates as `[Web Server]` toggle in Captures menu + `Show on Web` in detail sheet
+- [ ] BLE file transfer — Nordic UART Service streams captures to a phone; ties into wardriving phone-link plans
+
+**Bluetooth menu** (next major initiative, after WiFi side is fully polished)
+- [ ] Bluetooth submenu — BLE scan, BLE advertise/spam, BLE sniffer, phone-link mode
+
+**WiFi polish**
+- [ ] Fix Client Sniff click-to-render delay (rotary encoder twist needed for first render)
 - [ ] WiFi Client Sniffer 5GHz — extend channel hop table to include 5GHz channels
-- [ ] WiFi Scanner channel bar chart — 2.4GHz bar graph (encoder scrolls), 5GHz text summary
-- [x] **AP Mode (Evil Twin) + Captive Portal** — SSID picker clones any nearby AP; open network on same channel; auto-scans if no results; live client screen shows IP, channel, connected MACs with [NEW] tag and age. DNS hijacker on UDP/53 resolves all hostnames to the device. HTTP server serves a polished login page mimicking iOS/Android system captive portals. Submitted passwords are captured, logged to serial, and displayed prominently on the OLED. Long-press stops AP and restores STA mode.
-- [ ] STA Connect — connect to scanned AP, display IP/status
-- [x] **Deauth Attack** — AP picker from last scan results; broadcast deauth frame injection via patched libnet80211 + esp_wifi_80211_tx; live stats screen showing target SSID/BSSID, channel, frames sent, pps rate, elapsed time; long-press to stop
+
+**Hardware**
 - [ ] Battery power system — TP4056 charger, slide switch, LiPo (v2 hardware build)
 - [ ] RC filter — 100Ω + 10–100nF ceramic caps on encoder CLK/DT (v2 hardware)
 
 ### Future Ideas
 - [ ] 3D printed enclosure
-- [ ] PCB layout for v3
+- [ ] PCB layout for v3 (will add SD card via SPI + GPS UART, freeing flash for app code)
+- [ ] Wardriving mode — pair with phone over BLE for GPS coords; log SSID/BSSID/RSSI/channel/auth/GPS to LittleFS
 - [ ] Multi-screen dashboard — TCA9548A I2C mux driving up to 8 × SSD1306 OLEDs simultaneously. Each screen showing a different data view: 2.4GHz channel chart, 5GHz channel chart, AP list, deauth status, device stats. ~5 full refreshes/sec across all screens at 400kHz I2C. 8KB framebuffer total — trivial on C5. Would set this apart from every other WiFi tool out there.
 
 ---
@@ -126,19 +159,27 @@ idf.py -p /dev/ttyACM0 flash monitor
 
 ```
 main/
-├── main.c          — boot sequence, encoder event handler, menu callbacks
-├── ssd1306.c/h     — OLED driver (dirty-page framebuffer, I2C, header rendering)
-├── encoder.c/h     — EC11 rotary encoder (PCNT quadrature, polled SW debounce)
-├── neopixel.c/h    — WS2812B status LED (RMT)
-├── battery.c/h     — LiPo ADC reading + percentage
-├── menu.c/h        — menu stack, navigation, rendering
-├── wifi_scan.c/h   — WiFi scanner (active scan, animated spinner, AP detail view)
-├── wifi_ap.c/h     — AP mode (stub)
-├── wifi_sta.c/h    — STA connect (stub)
-├── wifi_attack.c/h — deauth engine (stub)
-└── boot_bitmap.h   — splash screen bitmap
+├── main.c             — boot sequence, encoder event handler, menu callbacks,
+│                        LittleFS mount, mode dispatch
+├── ssd1306.c/h        — OLED driver (dirty-page framebuffer, I2C, header rendering)
+├── encoder.c/h        — EC11 rotary encoder (PCNT quadrature, polled SW debounce)
+├── buttons.c/h        — generic button input helpers
+├── neopixel.c/h       — WS2812B status LED (RMT)
+├── battery.c/h        — LiPo ADC reading + percentage
+├── menu.c/h           — menu stack, navigation, rendering
+├── wifi_scan.c/h      — WiFi scanner (active scan, animated spinner, AP detail view)
+├── wifi_sniffer.c/h   — promiscuous client sniffer, channel-hop
+├── wifi_ap.c/h        — evil-twin AP mode (uses captive_portal for HTTP/DNS)
+├── wifi_sta.c/h       — STA connect
+├── wifi_attack.c/h    — deauth engine
+├── wifi_pmkid.c/h     — PMKID capture (auth/assoc forge → EAPOL M1 → RSN IE PMKID)
+├── wifi_handshake.c/h — WPA 4-way handshake capture (M1+M2 pairing, optional deauth)
+├── wifi_captures.c/h  — on-device viewer + per-entry detail sheet + serial dump
+├── captive_portal.c/h — DNS hijacker + HTTP login page for evil-twin
+└── boot_bitmap.h      — splash screen bitmap
 patched_libnet/
-└── libnet80211.a   — patched WiFi lib for raw frame TX (deauth support)
+└── libnet80211.a      — patched WiFi lib for raw frame TX (deauth + assoc forge)
+partitions.csv         — custom 8MB layout: 3MB factory + 4.9MB LittleFS storage
 ```
 
 ---
