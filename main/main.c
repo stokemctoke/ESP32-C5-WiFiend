@@ -26,6 +26,7 @@
 #include "esp_chip_info.h"
 #include "esp_littlefs.h"
 #include "wifi_pmkid.h"
+#include "wifi_handshake.h"
 
 static const char *TAG = "main";
 
@@ -37,6 +38,7 @@ static volatile bool sta_active      = false;
 static volatile bool chart_active    = false;
 static volatile bool info_active     = false;
 static volatile bool pmkid_active    = false;
+static volatile bool handshake_active = false;
 
 // Forward declarations for mutual callback references
 static void encoder_event_handler(encoder_event_t event);
@@ -49,6 +51,7 @@ static void chart_encoder_handler(encoder_event_t event);
 static void info_encoder_handler(encoder_event_t event);
 static void info_render(void);
 static void pmkid_encoder_handler(encoder_event_t event);
+static void handshake_encoder_handler(encoder_event_t event);
 
 static void detail_encoder_handler(encoder_event_t event) {
     if (event == ENCODER_LONG_PRESS) {
@@ -313,6 +316,39 @@ static void menu_pmkid(void) {
     wifi_pmkid_render();
 }
 
+static void handshake_encoder_handler(encoder_event_t event) {
+    switch (event) {
+        case ENCODER_CW:
+            if (wifi_handshake_is_in_picker()) wifi_handshake_scroll_down();
+            wifi_handshake_render();
+            break;
+        case ENCODER_CCW:
+            if (wifi_handshake_is_in_picker()) wifi_handshake_scroll_up();
+            wifi_handshake_render();
+            break;
+        case ENCODER_CLICK:
+            if (wifi_handshake_is_captured())   wifi_handshake_view_next();
+            else                                wifi_handshake_select();  // pick AP or fire deauth
+            wifi_handshake_render();
+            break;
+        case ENCODER_LONG_PRESS:
+            wifi_handshake_stop();
+            handshake_active = false;
+            encoder_set_callback(encoder_event_handler);
+            neopixel_set_color(COLOR_GREEN);
+            menu_render();
+            break;
+    }
+}
+
+static void menu_handshake(void) {
+    handshake_active = true;
+    neopixel_set_color(COLOR_YELLOW);
+    encoder_set_callback(handshake_encoder_handler);
+    wifi_handshake_enter();
+    wifi_handshake_render();
+}
+
 static void info_render(void) {
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -401,6 +437,7 @@ static menu_item_t main_menu[] = {
     {.label = "Deauth Attack", .on_select = menu_deauth_attack},
     {.label = "STA Connect",   .on_select = menu_sta_connect},
     {.label = "PMKID Capture", .on_select = menu_pmkid},
+    {.label = "Handshake Cap", .on_select = menu_handshake},
     {.label = "Ch Chart",      .on_select = menu_ch_chart},
     {.label = "Device Info",   .on_select = menu_device_info},
 };
@@ -417,7 +454,7 @@ static void encoder_event_handler(encoder_event_t event) {
             break;
         case ENCODER_CLICK:
             menu_select_current();
-            if (!scanner_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active) menu_render();
+            if (!scanner_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active) menu_render();
             break;
         case ENCODER_LONG_PRESS:
             menu_pop();
@@ -474,6 +511,7 @@ void app_main(void) {
     wifi_sta_init();
     wifi_attack_init();
     wifi_pmkid_init();
+    wifi_handshake_init();
 
     menu_init(main_menu, sizeof(main_menu) / sizeof(main_menu[0]));
     encoder_set_callback(encoder_event_handler);
@@ -481,11 +519,12 @@ void app_main(void) {
     ESP_LOGI(TAG, "Boot complete");
 
     while (1) {
-        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active) menu_render();
+        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active) menu_render();
         if (attack_active && wifi_attack_is_running()) wifi_attack_render();
         if (ap_active && wifi_ap_is_running()) wifi_ap_render();
         if (sta_active && (wifi_sta_is_connecting() || wifi_sta_needs_refresh())) wifi_sta_render();
         if (pmkid_active && (wifi_pmkid_is_running() || wifi_pmkid_needs_refresh())) wifi_pmkid_render();
+        if (handshake_active && (wifi_handshake_is_running() || wifi_handshake_needs_refresh())) wifi_handshake_render();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

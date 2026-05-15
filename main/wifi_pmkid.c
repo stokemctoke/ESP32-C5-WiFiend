@@ -423,9 +423,9 @@ static void render_hunting(void) {
              target_bssid[3], target_bssid[4], target_bssid[5]);
     ssd1306_draw_string(0, 3, line);
 
-    snprintf(line, sizeof(line), "Ch:%-2u Sent:%-4u",
+    { char tmp[32]; snprintf(tmp, sizeof(tmp), "Ch:%-2u Sent:%-4u",
              target_channel, (unsigned)frames_sent);
-    ssd1306_draw_string(0, 4, line);
+      tmp[16] = '\0'; ssd1306_draw_string(0, 4, tmp); }
 
     snprintf(line, sizeof(line), "%c Hunting...", spinner[tick % 4]);
     ssd1306_draw_string(0, 5, line);
