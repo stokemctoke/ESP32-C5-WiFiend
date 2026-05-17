@@ -1,4 +1,5 @@
 #include "wifi_captures.h"
+#include "captures_http.h"
 #include "ssd1306.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -19,14 +20,8 @@ typedef enum {
     CAP_VIEW_DETAIL,
     CAP_VIEW_DUMPING,
     CAP_VIEW_CONFIRM_CLEAR,
+    CAP_VIEW_WEB_SERVER,
 } cap_view_t;
-
-typedef struct {
-    char    type;        // 'P' = PMKID, 'H' = Handshake
-    char    ssid[17];
-    uint8_t bssid[6];
-    uint8_t client_mac[6];
-} cap_entry_t;
 
 #define DETAIL_ACTION_COUNT 3
 static const char *detail_action_label[DETAIL_ACTION_COUNT] = {
@@ -237,8 +232,8 @@ void wifi_captures_enter(void) {
     refresh           = true;
 }
 
-// Total list rows = entries + 2 actions (Dump All, Clear All)
-static uint16_t total_rows(void) { return entry_count + 2; }
+// Total list rows = entries + 3 actions (Dump All, Web Server, Clear All)
+static uint16_t total_rows(void) { return entry_count + 3; }
 
 void wifi_captures_scroll_up(void) {
     if (view_state == CAP_VIEW_LIST) {
@@ -320,6 +315,11 @@ void wifi_captures_select(void) {
         view_state = CAP_VIEW_LIST;
         refresh    = true;
     } else if (selected_idx == entry_count + 1) {
+        // "Web Server" — start AP + HTTP server for file download
+        captures_http_start();
+        view_state = CAP_VIEW_WEB_SERVER;
+        refresh    = true;
+    } else if (selected_idx == entry_count + 2) {
         // "Clear All"
         view_state = CAP_VIEW_CONFIRM_CLEAR;
         refresh    = true;
@@ -327,6 +327,13 @@ void wifi_captures_select(void) {
 }
 
 bool wifi_captures_back(void) {
+    if (view_state == CAP_VIEW_WEB_SERVER) {
+        captures_http_stop();
+        wifi_captures_reload();
+        view_state = CAP_VIEW_LIST;
+        refresh    = true;
+        return false;
+    }
     if (view_state == CAP_VIEW_DETAIL || view_state == CAP_VIEW_CONFIRM_CLEAR) {
         view_state = CAP_VIEW_LIST;
         refresh    = true;
@@ -341,7 +348,60 @@ void wifi_captures_stop(void) {
 }
 
 bool wifi_captures_is_active(void)     { return active; }
-bool wifi_captures_needs_refresh(void) { bool v = refresh; refresh = false; return v; }
+
+bool wifi_captures_needs_refresh(void) {
+    bool v = refresh;
+    refresh = false;
+    if (view_state == CAP_VIEW_WEB_SERVER && captures_http_consume_change()) {
+        v = true;
+    }
+    return v;
+}
+
+uint16_t wifi_captures_get_count(void) { return entry_count; }
+
+const cap_entry_t *wifi_captures_get_entry(uint16_t idx) {
+    if (idx >= entry_count) return NULL;
+    return &entries[idx];
+}
+
+void wifi_captures_reload(void) {
+    load_captures();
+    if (selected_idx >= total_rows()) selected_idx = 0;
+    if (selected_idx < scroll_offset) scroll_offset = selected_idx;
+    refresh = true;
+}
+
+const char *wifi_captures_log_path(char type) {
+    if (type == 'P') return PMKID_LOG_PATH;
+    if (type == 'H') return HANDSHAKE_LOG_PATH;
+    return NULL;
+}
+
+size_t wifi_captures_get_entry_line(uint16_t idx, char *buf, size_t bufsz) {
+    if (idx >= entry_count || bufsz < 2) return 0;
+    const cap_entry_t *e = &entries[idx];
+    const char *path = wifi_captures_log_path(e->type);
+    if (!path) return 0;
+
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+
+    char lbuf[768];
+    size_t out = 0;
+    while (fgets(lbuf, sizeof(lbuf), fp)) {
+        if (line_matches_entry(lbuf, e)) {
+            size_t len = strlen(lbuf);
+            if (len >= bufsz) len = bufsz - 1;
+            memcpy(buf, lbuf, len);
+            buf[len] = '\0';
+            out = len;
+            break;
+        }
+    }
+    fclose(fp);
+    return out;
+}
 
 // ---------- render ----------
 
@@ -367,6 +427,9 @@ static void render_list(void) {
                      e->type, ssid);
         } else if (idx == entry_count) {
             snprintf(line, sizeof(line), "%c[Dump All Ser]",
+                     (idx == selected_idx) ? '>' : ' ');
+        } else if (idx == entry_count + 1) {
+            snprintf(line, sizeof(line), "%c[Web Server]",
                      (idx == selected_idx) ? '>' : ' ');
         } else {
             snprintf(line, sizeof(line), "%c[Clear All]",
@@ -434,11 +497,28 @@ static void render_confirm_clear(void) {
     ssd1306_flush();
 }
 
+static void render_web_server(void) {
+    ssd1306_clear_buffer();
+    char status[16];
+    snprintf(status, sizeof(status), "%u client",
+             (unsigned)captures_http_get_client_count());
+    ssd1306_draw_header("WEB SRVR", status);
+
+    ssd1306_draw_string(0, 2, "SSID:");
+    ssd1306_draw_string(0, 3, CAPTURES_HTTP_SSID);
+    ssd1306_draw_string(0, 4, "Open network");
+    ssd1306_draw_string(0, 5, "Browse to:");
+    ssd1306_draw_string(0, 6, CAPTURES_HTTP_IP);
+    ssd1306_draw_string(0, 7, "LN>stop server");
+    ssd1306_flush();
+}
+
 void wifi_captures_render(void) {
     switch (view_state) {
         case CAP_VIEW_LIST:          render_list();          break;
         case CAP_VIEW_DETAIL:        render_detail();        break;
         case CAP_VIEW_DUMPING:       render_dumping();       break;
         case CAP_VIEW_CONFIRM_CLEAR: render_confirm_clear(); break;
+        case CAP_VIEW_WEB_SERVER:    render_web_server();    break;
     }
 }

@@ -14,6 +14,7 @@ idf_component_register(
         wifi_pmkid.c
         wifi_handshake.c
         wifi_captures.c
+        captures_http.c
         captive_portal.c
     INCLUDE_DIRS "."
     PRIV_REQUIRES
