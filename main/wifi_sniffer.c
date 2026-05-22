@@ -176,6 +176,11 @@ uint16_t wifi_sniff_get_count(void) {
     return client_count;
 }
 
+const wifi_client_t *wifi_sniff_get_client(uint16_t idx) {
+    if (idx >= client_count) return NULL;
+    return &clients[idx];
+}
+
 void wifi_sniff_scroll_up(void) {
     if (selected_idx > 0) {
         selected_idx--;

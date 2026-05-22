@@ -8,7 +8,7 @@ static const char *TAG = "neopixel";
 #define NEOPIXEL_COUNT 1
 
 static led_strip_handle_t led_strip = NULL;
-static uint8_t current_brightness = 10;
+static uint8_t current_brightness = 15;
 
 void neopixel_init(void) {
     led_strip_config_t strip_config = {

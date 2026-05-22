@@ -11,7 +11,7 @@
 
 An interactive, menu-driven WiFi pen-testing handheld built on the XIAO ESP32-C5. Navigate modes with a rotary encoder, monitor status on a 0.96" OLED, and control everything from a compact perfboard build powered by a 3.7V LiPo.
 
-Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame injection engine, channel scanner, client sniffer, evil-twin AP with captive portal, STA connect, PMKID capture, WPA handshake capture, and on-device capture management — all menu-driven from a single rotary encoder. Captures are written to LittleFS on the 8MB flash and exportable in hashcat-22000 format.
+Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame injection engine, channel scanner, client sniffer, evil-twin AP with captive portal, STA connect, PMKID capture, WPA handshake capture, and on-device capture management — all menu-driven from a single rotary encoder. Captures are written to LittleFS on the 8MB flash and exportable in hashcat-22000 format. A **Remote WebUI** serves a phone-friendly monitoring/scan/capture dashboard over its own soft-AP, and a **Games** menu (Pong, Conway's Game of Life, Reaction Test) with persistent hi-scores rounds out the build.
 
 ---
 
@@ -58,20 +58,16 @@ The 0.96" SSD1306 has a yellow/blue physical colour split. The firmware uses thi
 │ WiFiend      USB │    title left, battery/power right
 │                  │    contextual status line
 ├──────────────────┤  ← blue zone (pages 2–7, bottom 48px)
-│ > WiFi Scan      │
-│   Client Sniff   │    menu items / screen content
-│   AP Mode        │
-│   Deauth Attack  │
-│   STA Connect    │
-│   PMKID Capture  │
-│   Handshake Cap  │
-│   Captures       │
-│   Ch Chart       │
-│   Device Info    │
+│ > WiFi           │
+│   Bluetooth      │    top-level categories
+│   Games          │
+│   Settings       │
 └──────────────────┘
 ```
 
-NeoPixel colour per mode: green = idle, yellow = scanning / hunting, cyan = results / captures view, red = deauth, magenta = STA connect.
+The main menu is organised into categories. **WiFi** holds Scan, Client Sniff, AP Mode, Deauth, STA Connect, PMKID, Handshake, Captures, Remote WebUI and Ch Chart; **Games** holds Pong, Game of Life and Reaction Test; **Settings** holds Device Info; **Bluetooth** is a stub for the next initiative. Submenus show a "Long-press = Back" hint.
+
+NeoPixel colour per mode: green = idle, yellow = scanning / hunting, cyan = results / captures view / WebUI, red = deauth, magenta = STA connect / games, and a rainbow cycle while Game of Life runs.
 
 ---
 
@@ -127,13 +123,21 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [x] **WPA Handshake Capture** — passive listen for EAPOL M1+M2 between real clients and a target AP; pairs by replay counter; reconstructs the M2 EAPOL frame with MIC zeroed; saves a hashcat-22000 line (`WPA*02*MIC*…*ANONCE*EAPOL*MP`) to `/lfs/handshakes.log`. CLICK during hunting fires a 48-frame deauth burst (alternating broadcast + targeted) to force re-authentication. Header shows live `M1:x M2:y` counters.
 - [x] **Captures Menu** — on-device viewer for all saved PMKID and handshake captures; parses each hashcat line for SSID + BSSID + client MAC. Per-entry detail sheet with **Dump to Serial** (single capture's hashcat line via USB-Serial-JTAG CDC, ready to paste into hashcat) and **Delete this** (rewrites log in place). Bulk actions: **Dump All Serial** and **Clear All** (with confirmation).
 
+**Remote WebUI**
+- [x] **Remote WebUI dashboard** — dedicated `WiFiend-Remote` soft-AP serves a phone-friendly single-page web app (WebSocket-driven) at 192.168.4.1. Branded to match stokemctoke.com colours, with a live activity-log panel showing exactly what the device is doing. Tabs: **Scan** (run/browse APs on a real screen), **Capture** (PMKID/Handshake hunts + view/download saved `.hc22000` files straight to the phone), **Tools** (client sniffer, STA connect), **System** (device info, downloads, exit). Active radio-commandeering attacks (deauth, clone AP) are intentionally device-only — they take over the single radio and would drop the web link — so the dashboard stays reliable.
+
+**Games**
+- [x] **Pong** — encoder-controlled paddle vs. a CPU that ramps from clumsy to ruthless; score = win streak, with the CPU starting tougher each win. Ball speeds up over a round; play field kept in the blue zone.
+- [x] **Conway's Game of Life** — 64×32 toroidal grid; encoder-dialled deterministic seed (digit-by-digit entry); self-reseeds if the colony dies; NeoPixel rainbow cycle while running.
+- [x] **Reaction Test** — NeoPixel flashes a colour; match the shuffled colour-word and click within the level window. 3 lives, window tightens 0.1s per level; faster = more points.
+- [x] **Persistent hi-scores** — shared NVS-backed top-10 table (arcade 3-letter names, scrollable) for Pong and Reaction; survives reboots and reflashes.
+
 **Other**
 - [x] **Device Info** — stateful screen showing MAC, free heap, flash size, chip revision, IDF version, uptime, WiFi mode
 
 ### Upcoming
 
 **Transfer methods** (reusable across all on-device capture features)
-- [ ] HTTP server — serve `/lfs/*.log` over AP mode at 192.168.4.1, with a per-entry route for individual captures; integrates as `[Web Server]` toggle in Captures menu + `Show on Web` in detail sheet
 - [ ] BLE file transfer — Nordic UART Service streams captures to a phone; ties into wardriving phone-link plans
 
 **Bluetooth menu** (next major initiative, after WiFi side is fully polished)
@@ -176,6 +180,13 @@ main/
 ├── wifi_handshake.c/h — WPA 4-way handshake capture (M1+M2 pairing, optional deauth)
 ├── wifi_captures.c/h  — on-device viewer + per-entry detail sheet + serial dump
 ├── captive_portal.c/h — DNS hijacker + HTTP login page for evil-twin
+├── captures_http.c    — HTTP serving of capture logs
+├── wifi_webui.c/h     — Remote WebUI dashboard (soft-AP, HTTP + WebSocket)
+├── webui_html.h       — embedded single-page web app (HTML/CSS/JS)
+├── game_pong.c/h      — Pong (win-streak hi-score)
+├── game_life.c/h      — Conway's Game of Life (seeded, rainbow LED)
+├── game_react.c/h     — Reaction Test (lives, shrinking window, hi-score)
+├── hiscore.c/h        — shared NVS-backed top-10 hi-score table
 └── boot_bitmap.h      — splash screen bitmap
 patched_libnet/
 └── libnet80211.a      — patched WiFi lib for raw frame TX (deauth + assoc forge)

@@ -359,6 +359,8 @@ bool wifi_pmkid_is_running(void)   { return pmkid_hunting; }
 bool wifi_pmkid_is_in_picker(void) { return state == PMKID_STATE_PICK; }
 bool wifi_pmkid_is_captured(void)  { return state == PMKID_STATE_CAPTURED; }
 uint8_t wifi_pmkid_get_count(void) { return cap_count; }
+const char *wifi_pmkid_get_target(void)  { return target_ssid; }
+uint16_t    wifi_pmkid_get_frames(void)  { return frames_sent; }
 
 bool wifi_pmkid_needs_refresh(void) {
     bool v = pmkid_refresh;

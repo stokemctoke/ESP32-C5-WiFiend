@@ -329,3 +329,6 @@ void wifi_ap_render(void) {
         render_picker();
     }
 }
+
+const char *wifi_ap_get_ssid(void)          { return ap_ssid; }
+uint8_t     wifi_ap_get_client_count(void)  { return client_count; }

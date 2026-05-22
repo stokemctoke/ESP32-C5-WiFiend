@@ -395,6 +395,10 @@ bool wifi_handshake_is_running(void)   { return hs_hunting; }
 bool wifi_handshake_is_in_picker(void) { return state == HS_STATE_PICK; }
 bool wifi_handshake_is_captured(void)  { return state == HS_STATE_CAPTURED; }
 uint8_t wifi_handshake_get_count(void) { return cap_count; }
+const char *wifi_handshake_get_target(void) { return target_ssid; }
+uint16_t    wifi_handshake_get_m1(void)     { return m1_seen; }
+uint16_t    wifi_handshake_get_m2(void)     { return m2_seen; }
+uint16_t    wifi_handshake_get_deauth(void) { return deauth_sent; }
 
 bool wifi_handshake_needs_refresh(void) {
     bool v = hs_refresh;

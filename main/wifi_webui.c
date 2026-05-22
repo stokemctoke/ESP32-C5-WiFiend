@@ -1,0 +1,825 @@
+#include "wifi_webui.h"
+#include "webui_html.h"
+#include "wifi_scan.h"
+#include "wifi_sniffer.h"
+#include "wifi_attack.h"
+#include "wifi_ap.h"
+#include "wifi_sta.h"
+#include "wifi_pmkid.h"
+#include "wifi_handshake.h"
+#include "wifi_captures.h"
+#include "ssd1306.h"
+#include "neopixel.h"
+#include "battery.h"
+#include "esp_wifi.h"
+#include "esp_http_server.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_mac.h"
+#include "esp_flash.h"
+#include "esp_chip_info.h"
+#include "esp_event.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "cJSON.h"
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+
+static const char *TAG = "webui";
+
+#define MAX_WS_CLIENTS   4
+#define AP_MAX_CONN      4
+
+static httpd_handle_t    s_httpd       = NULL;
+static volatile bool     s_running     = false;
+static volatile uint8_t  s_clients     = 0;
+static volatile bool     s_refresh     = false;
+static volatile bool     s_restarting  = false;
+static SemaphoreHandle_t s_ws_mutex    = NULL;
+static int               s_ws_fds[MAX_WS_CLIENTS];
+
+static webui_op_start_cb_t s_op_start_cb = NULL;
+static webui_op_stop_cb_t  s_op_stop_cb  = NULL;
+
+// ---------- WS client registry ----------
+
+static void ws_fd_add(int fd) {
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (s_ws_fds[i] < 0) { s_ws_fds[i] = fd; break; }
+    }
+    xSemaphoreGive(s_ws_mutex);
+}
+
+static void ws_fd_remove(int fd) {
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (s_ws_fds[i] == fd) { s_ws_fds[i] = -1; break; }
+    }
+    xSemaphoreGive(s_ws_mutex);
+}
+
+// ---------- broadcast helpers ----------
+
+static void broadcast_text(const char *json) {
+    if (!s_httpd || !json) return;
+    httpd_ws_frame_t f = {
+        .type    = HTTPD_WS_TYPE_TEXT,
+        .payload = (uint8_t *)json,
+        .len     = strlen(json),
+    };
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+        if (s_ws_fds[i] >= 0) {
+            if (httpd_ws_send_frame_async(s_httpd, s_ws_fds[i], &f) != ESP_OK) {
+                s_ws_fds[i] = -1;
+            }
+        }
+    }
+    xSemaphoreGive(s_ws_mutex);
+}
+
+static void send_to_fd(int fd, const char *json) {
+    if (!s_httpd || fd < 0 || !json) return;
+    httpd_ws_frame_t f = {
+        .type    = HTTPD_WS_TYPE_TEXT,
+        .payload = (uint8_t *)json,
+        .len     = strlen(json),
+    };
+    httpd_ws_send_frame_async(s_httpd, fd, &f);
+}
+
+// Broadcast a short status line to all WS clients. Wrapped in a JSON {"event":"log","msg":...}.
+// Use sparingly — these surface in the on-screen activity log.
+static void emit_log(const char *fmt, ...) {
+    char msg[200];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    ESP_LOGI(TAG, "ui: %s", msg);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "event", "log");
+    cJSON_AddStringToObject(root, "msg", msg);
+    char *s = cJSON_PrintUnformatted(root);
+    if (s) { broadcast_text(s); free(s); }
+    cJSON_Delete(root);
+}
+
+// ---------- WiFi event handlers ----------
+
+static void on_ap_connect(void *arg, esp_event_base_t base, int32_t id, void *data) {
+    if (s_clients < 255) s_clients++;
+    s_refresh = true;
+    ESP_LOGI(TAG, "Client connected (%u total)", (unsigned)s_clients);
+    broadcast_text("{\"event\":\"wifi_ready\"}");
+}
+
+static void on_ap_disconnect(void *arg, esp_event_base_t base, int32_t id, void *data) {
+    if (s_clients > 0) s_clients--;
+    s_refresh = true;
+    ESP_LOGI(TAG, "Client disconnected (%u total)", (unsigned)s_clients);
+    // Remove the fd from registry; client will WS-reconnect
+    wifi_event_ap_stadisconnected_t *ev = data;
+    (void)ev;
+}
+
+// ---------- AP/HTTP setup internal helper ----------
+
+static void register_ws_event_handlers(void) {
+    esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_STACONNECTED,
+                               on_ap_connect, NULL);
+    esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_STADISCONNECTED,
+                               on_ap_disconnect, NULL);
+}
+
+static void unregister_ws_event_handlers(void) {
+    esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_AP_STACONNECTED,
+                                 on_ap_connect);
+    esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_AP_STADISCONNECTED,
+                                 on_ap_disconnect);
+}
+
+// Forward-declared — defined after HTTP handlers
+static void register_uri_handlers(void);
+
+static void start_ap_and_httpd(void) {
+    wifi_config_t cfg = {0};
+    const char *ssid = WEBUI_AP_SSID;
+    size_t slen = strlen(ssid);
+    memcpy(cfg.ap.ssid, ssid, slen);
+    cfg.ap.ssid_len       = (uint8_t)slen;
+    cfg.ap.channel        = WEBUI_AP_CHANNEL;
+    cfg.ap.authmode       = WIFI_AUTH_OPEN;
+    cfg.ap.max_connection = AP_MAX_CONN;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &cfg));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    register_ws_event_handlers();
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
+    hcfg.max_uri_handlers = 8;
+    hcfg.lru_purge_enable = true;
+
+    if (httpd_start(&s_httpd, &hcfg) != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_start failed");
+        s_httpd = NULL;
+        return;
+    }
+    register_uri_handlers();
+    ESP_LOGI(TAG, "WebUI up: SSID=%s IP=%s", WEBUI_AP_SSID, WEBUI_AP_IP);
+}
+
+static void stop_ap_and_httpd(void) {
+    unregister_ws_event_handlers();
+    if (s_httpd) { httpd_stop(s_httpd); s_httpd = NULL; }
+    esp_wifi_stop();
+}
+
+// ---------- cJSON state builder ----------
+
+static cJSON *build_state_json(void) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "event", "state");
+
+    // AP list from last scan
+    uint16_t cnt = 0;
+    const wifi_ap_info_t *aps = wifi_scan_get_results(&cnt);
+    cJSON *ap_arr = cJSON_AddArrayToObject(root, "aps");
+    for (uint16_t i = 0; i < cnt; i++) {
+        cJSON *ap = cJSON_CreateObject();
+        cJSON_AddStringToObject(ap, "ssid", aps[i].ssid);
+        cJSON_AddNumberToObject(ap, "channel", aps[i].channel);
+        cJSON_AddNumberToObject(ap, "rssi", aps[i].rssi);
+        cJSON_AddNumberToObject(ap, "security", aps[i].security);
+        char bs[18];
+        snprintf(bs, sizeof(bs), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 aps[i].bssid[0], aps[i].bssid[1], aps[i].bssid[2],
+                 aps[i].bssid[3], aps[i].bssid[4], aps[i].bssid[5]);
+        cJSON_AddStringToObject(ap, "bssid", bs);
+        cJSON_AddItemToArray(ap_arr, ap);
+    }
+
+    cJSON_AddBoolToObject(root, "attack_running",  wifi_attack_is_running());
+    cJSON_AddBoolToObject(root, "pmkid_running",   wifi_pmkid_is_running());
+    cJSON_AddBoolToObject(root, "hs_running",      wifi_handshake_is_running());
+    cJSON_AddBoolToObject(root, "ap_running",      wifi_ap_is_running());
+    cJSON_AddBoolToObject(root, "sta_connected",   wifi_sta_is_connected());
+
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char mac_str[18];
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    cJSON_AddStringToObject(root, "mac", mac_str);
+    cJSON_AddNumberToObject(root, "heap_kb", (double)(esp_get_free_heap_size() / 1024));
+    cJSON_AddNumberToObject(root, "uptime_s", (double)(esp_timer_get_time() / 1000000LL));
+
+    uint32_t flash_size = 0;
+    esp_flash_get_size(NULL, &flash_size);
+    cJSON_AddNumberToObject(root, "flash_mb", (double)(flash_size / (1024 * 1024)));
+
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+    char idf[16];
+    strncpy(idf, esp_get_idf_version(), 15);
+    idf[15] = '\0';
+    cJSON_AddStringToObject(root, "idf_ver", idf);
+
+    uint8_t batt = battery_get_percentage();
+    if (batt != 0xFF) cJSON_AddNumberToObject(root, "battery_pct", batt);
+
+    cJSON_AddNumberToObject(root, "capture_count", wifi_captures_get_count());
+    return root;
+}
+
+static void push_state_to_fd(int fd) {
+    cJSON *root = build_state_json();
+    char *s = cJSON_PrintUnformatted(root);
+    if (s) { send_to_fd(fd, s); free(s); }
+    cJSON_Delete(root);
+}
+
+static void __attribute__((unused)) push_state_all(void) {
+    cJSON *root = build_state_json();
+    char *s = cJSON_PrintUnformatted(root);
+    if (s) { broadcast_text(s); free(s); }
+    cJSON_Delete(root);
+}
+
+// ---------- scan result push ----------
+
+static void push_scan_done(void) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "event", "scan_done");
+    uint16_t cnt = 0;
+    const wifi_ap_info_t *aps = wifi_scan_get_results(&cnt);
+    cJSON *arr = cJSON_AddArrayToObject(root, "aps");
+    for (uint16_t i = 0; i < cnt; i++) {
+        cJSON *ap = cJSON_CreateObject();
+        cJSON_AddStringToObject(ap, "ssid", aps[i].ssid);
+        cJSON_AddNumberToObject(ap, "channel", aps[i].channel);
+        cJSON_AddNumberToObject(ap, "rssi", aps[i].rssi);
+        cJSON_AddNumberToObject(ap, "security", aps[i].security);
+        char bs[18];
+        snprintf(bs, sizeof(bs), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 aps[i].bssid[0], aps[i].bssid[1], aps[i].bssid[2],
+                 aps[i].bssid[3], aps[i].bssid[4], aps[i].bssid[5]);
+        cJSON_AddStringToObject(ap, "bssid", bs);
+        cJSON_AddItemToArray(arr, ap);
+    }
+    char *s = cJSON_PrintUnformatted(root);
+    if (s) { broadcast_text(s); free(s); }
+    cJSON_Delete(root);
+}
+
+// ---------- captures JSON endpoint ----------
+
+static esp_err_t captures_json_handler(httpd_req_t *req) {
+    cJSON *arr = cJSON_CreateArray();
+    uint16_t n = wifi_captures_get_count();
+    for (uint16_t i = 0; i < n; i++) {
+        const cap_entry_t *e = wifi_captures_get_entry(i);
+        if (!e) continue;
+        cJSON *c = cJSON_CreateObject();
+        char type[2] = { e->type, 0 };
+        cJSON_AddStringToObject(c, "type", type);
+        cJSON_AddStringToObject(c, "ssid", e->ssid[0] ? e->ssid : "");
+        char bs[18];
+        snprintf(bs, sizeof(bs), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 e->bssid[0], e->bssid[1], e->bssid[2],
+                 e->bssid[3], e->bssid[4], e->bssid[5]);
+        cJSON_AddStringToObject(c, "bssid", bs);
+        cJSON_AddNumberToObject(c, "index", i);
+        cJSON_AddItemToArray(arr, c);
+    }
+    char *s = cJSON_PrintUnformatted(arr);
+    cJSON_Delete(arr);
+    if (!s) {
+        httpd_resp_send(req, "[]", 2);
+        return ESP_OK;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, s, strlen(s));
+    free(s);
+    return ESP_OK;
+}
+
+// ---------- log file handlers (mirrors captures_http.c) ----------
+
+static esp_err_t serve_log(httpd_req_t *req, const char *path,
+                            const char *fname) {
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    char cd[96];
+    snprintf(cd, sizeof(cd), "attachment; filename=\"%s\"", fname);
+    httpd_resp_set_hdr(req, "Content-Disposition", cd);
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        const char *msg = "(no captures of this type yet)\n";
+        httpd_resp_send(req, msg, strlen(msg));
+        return ESP_OK;
+    }
+    char buf[512];
+    size_t nr;
+    while ((nr = fread(buf, 1, sizeof(buf), fp)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, nr) != ESP_OK) break;
+    }
+    fclose(fp);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t pmkid_log_handler(httpd_req_t *req) {
+    return serve_log(req, wifi_captures_log_path('P'), "wifiend-pmkid.hc22000");
+}
+
+static esp_err_t handshake_log_handler(httpd_req_t *req) {
+    return serve_log(req, wifi_captures_log_path('H'), "wifiend-handshakes.hc22000");
+}
+
+static esp_err_t entry_handler(httpd_req_t *req) {
+    char query[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        httpd_resp_send_404(req); return ESP_OK;
+    }
+    char idx_str[16];
+    if (httpd_query_key_value(query, "i", idx_str, sizeof(idx_str)) != ESP_OK) {
+        httpd_resp_send_404(req); return ESP_OK;
+    }
+    int idx = atoi(idx_str);
+    if (idx < 0 || idx >= wifi_captures_get_count()) {
+        httpd_resp_send_404(req); return ESP_OK;
+    }
+    char line[768];
+    size_t n = wifi_captures_get_entry_line((uint16_t)idx, line, sizeof(line));
+    if (n == 0) { httpd_resp_send_404(req); return ESP_OK; }
+    const cap_entry_t *e = wifi_captures_get_entry((uint16_t)idx);
+    char cd[96];
+    snprintf(cd, sizeof(cd), "attachment; filename=\"wifiend-%s-%d.hc22000\"",
+             (e && e->type == 'P') ? "pmkid" : "handshake", idx);
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Content-Disposition", cd);
+    httpd_resp_send(req, line, n);
+    return ESP_OK;
+}
+
+// ---------- SPA root handler ----------
+
+static esp_err_t root_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    size_t total = sizeof(WEBUI_HTML) - 1;
+    size_t sent  = 0;
+    while (sent < total) {
+        size_t chunk = (total - sent > 4096) ? 4096 : (total - sent);
+        if (httpd_resp_send_chunk(req, WEBUI_HTML + sent, (ssize_t)chunk) != ESP_OK) break;
+        sent += chunk;
+    }
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+// ---------- WiFi-restart coordination ----------
+
+static void wifi_restart_begin(void) {
+    s_restarting = true;
+    s_refresh    = true;
+    broadcast_text("{\"event\":\"wifi_restarting\"}");
+    vTaskDelay(pdMS_TO_TICKS(80));
+    stop_ap_and_httpd();
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) s_ws_fds[i] = -1;
+    xSemaphoreGive(s_ws_mutex);
+}
+
+static void wifi_restart_finish(void) {
+    start_ap_and_httpd();
+    s_restarting = false;
+    s_refresh    = true;
+}
+
+// ---------- scroll-to-index helper (for picker-based modules) ----------
+
+static void scroll_to(void (*down_fn)(void), uint16_t idx) {
+    for (uint16_t i = 0; i < idx; i++) down_fn();
+}
+
+// Find index of BSSID in current scan results. Returns UINT16_MAX if not found.
+static uint16_t find_ap_idx(const char *bssid_str) {
+    uint16_t cnt = 0;
+    const wifi_ap_info_t *aps = wifi_scan_get_results(&cnt);
+    for (uint16_t i = 0; i < cnt; i++) {
+        char bs[18];
+        snprintf(bs, sizeof(bs), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 aps[i].bssid[0], aps[i].bssid[1], aps[i].bssid[2],
+                 aps[i].bssid[3], aps[i].bssid[4], aps[i].bssid[5]);
+        if (strcasecmp(bs, bssid_str) == 0) return i;
+    }
+    return UINT16_MAX;
+}
+
+// ---------- FreeRTOS tasks for WiFi-restarting operations ----------
+
+static void scan_task(void *arg) {
+    emit_log("Scanning for APs...");
+    if (s_op_start_cb) s_op_start_cb("scan");
+    wifi_scan_start();
+    if (s_op_stop_cb) s_op_stop_cb("scan");
+    uint16_t cnt = 0;
+    wifi_scan_get_results(&cnt);
+    emit_log("Scan complete: %u AP%s", (unsigned)cnt, cnt == 1 ? "" : "s");
+    push_scan_done();
+    vTaskDelete(NULL);
+}
+
+static void sniff_monitor_task(void *arg) {
+    if (s_op_start_cb) s_op_start_cb("sniff");
+    wifi_sniff_start();
+    emit_log("Client sniffer started");
+    while (s_running) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "event", "sniff_update");
+        uint16_t sc = wifi_sniff_get_count();
+        cJSON_AddNumberToObject(root, "count", sc);
+        cJSON *arr = cJSON_AddArrayToObject(root, "clients");
+        for (uint16_t i = 0; i < sc && i < 20; i++) {
+            const wifi_client_t *c = wifi_sniff_get_client(i);
+            if (!c) continue;
+            cJSON *cl = cJSON_CreateObject();
+            char ms[18];
+            snprintf(ms, sizeof(ms), "%02X:%02X:%02X:%02X:%02X:%02X",
+                     c->mac[0], c->mac[1], c->mac[2],
+                     c->mac[3], c->mac[4], c->mac[5]);
+            cJSON_AddStringToObject(cl, "mac", ms);
+            cJSON_AddNumberToObject(cl, "rssi", c->rssi);
+            cJSON_AddNumberToObject(cl, "channel", c->channel);
+            cJSON_AddItemToArray(arr, cl);
+        }
+        char *s = cJSON_PrintUnformatted(root);
+        if (s) { broadcast_text(s); free(s); }
+        cJSON_Delete(root);
+        vTaskDelay(pdMS_TO_TICKS(800));
+    }
+    if (s_op_stop_cb) s_op_stop_cb("sniff");
+    emit_log("Client sniffer stopped: %u client%s seen",
+             (unsigned)wifi_sniff_get_count(),
+             wifi_sniff_get_count() == 1 ? "" : "s");
+    vTaskDelete(NULL);
+}
+
+static void pmkid_task(void *arg) {
+    char *bssid = (char *)arg;
+    emit_log("PMKID hunt: switching to STA mode (WebUI will briefly reconnect)");
+    vTaskDelay(pdMS_TO_TICKS(150));
+    wifi_restart_begin();
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_start();
+
+    wifi_pmkid_enter();
+    uint16_t idx = find_ap_idx(bssid);
+    if (idx != UINT16_MAX) scroll_to(wifi_pmkid_scroll_down, idx);
+    free(bssid);
+
+    if (s_op_start_cb) s_op_start_cb("pmkid");
+    wifi_pmkid_select();
+
+    wifi_restart_finish();
+    emit_log("PMKID hunt started: target %s", wifi_pmkid_get_target());
+
+    while (wifi_pmkid_is_running()) {
+        const char *state_str = wifi_pmkid_is_captured() ? "captured" : "hunting";
+        char buf[192];
+        snprintf(buf, sizeof(buf),
+                 "{\"event\":\"pmkid_update\",\"state\":\"%s\",\"frames\":%u,\"target\":\"%s\",\"count\":%u}",
+                 state_str, (unsigned)wifi_pmkid_get_frames(),
+                 wifi_pmkid_get_target(), (unsigned)wifi_pmkid_get_count());
+        broadcast_text(buf);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    const char *final = wifi_pmkid_is_captured() ? "captured" : "failed";
+    char final_buf[128];
+    snprintf(final_buf, sizeof(final_buf),
+             "{\"event\":\"pmkid_update\",\"state\":\"%s\",\"target\":\"%s\",\"count\":%u}",
+             final, wifi_pmkid_get_target(), (unsigned)wifi_pmkid_get_count());
+    broadcast_text(final_buf);
+    if (s_op_stop_cb) s_op_stop_cb("pmkid");
+    emit_log("PMKID hunt done: %s (%u capture%s)",
+             final, (unsigned)wifi_pmkid_get_count(),
+             wifi_pmkid_get_count() == 1 ? "" : "s");
+    vTaskDelete(NULL);
+}
+
+static void hs_task(void *arg) {
+    char *bssid = (char *)arg;
+    emit_log("Handshake hunt: switching to STA mode (WebUI will briefly reconnect)");
+    vTaskDelay(pdMS_TO_TICKS(150));
+    wifi_restart_begin();
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_start();
+
+    wifi_handshake_enter();
+    uint16_t idx = find_ap_idx(bssid);
+    if (idx != UINT16_MAX) scroll_to(wifi_handshake_scroll_down, idx);
+    free(bssid);
+
+    if (s_op_start_cb) s_op_start_cb("hs");
+    wifi_handshake_select();
+
+    wifi_restart_finish();
+    emit_log("Handshake hunt started: target %s", wifi_handshake_get_target());
+
+    while (wifi_handshake_is_running()) {
+        const char *state_str = wifi_handshake_is_captured() ? "captured" : "hunting";
+        char buf[192];
+        snprintf(buf, sizeof(buf),
+                 "{\"event\":\"hs_update\",\"state\":\"%s\","
+                 "\"m1_seen\":%u,\"m2_seen\":%u,\"deauth_sent\":%u,\"target\":\"%s\"}",
+                 state_str,
+                 (unsigned)wifi_handshake_get_m1(),
+                 (unsigned)wifi_handshake_get_m2(),
+                 (unsigned)wifi_handshake_get_deauth(),
+                 wifi_handshake_get_target());
+        broadcast_text(buf);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    const char *final = wifi_handshake_is_captured() ? "captured" : "failed";
+    char final_buf[128];
+    snprintf(final_buf, sizeof(final_buf),
+             "{\"event\":\"hs_update\",\"state\":\"%s\",\"target\":\"%s\",\"count\":%u}",
+             final, wifi_handshake_get_target(), (unsigned)wifi_handshake_get_count());
+    broadcast_text(final_buf);
+    if (s_op_stop_cb) s_op_stop_cb("hs");
+    emit_log("Handshake hunt done: %s", final);
+    vTaskDelete(NULL);
+}
+
+typedef struct { char ssid[33]; char password[65]; uint8_t security; } sta_connect_arg_t;
+
+static void sta_task(void *arg) {
+    sta_connect_arg_t *a = (sta_connect_arg_t *)arg;
+    emit_log("STA connect: %s (WebUI will briefly reconnect)", a->ssid);
+    vTaskDelay(pdMS_TO_TICKS(150));
+    wifi_restart_begin();
+
+    if (s_op_start_cb) s_op_start_cb("sta");
+    wifi_sta_connect_direct(a->ssid, a->security, a->password);
+    free(a);
+
+    wifi_restart_finish();
+
+    for (int tick = 0; tick < 60 && s_running; tick++) {
+        wifi_connect_state_t st = wifi_sta_get_state();
+        const char *state_str = (st == WIFI_CONNECT_CONNECTED)   ? "connected"  :
+                                (st == WIFI_CONNECT_CONNECTING)   ? "connecting" :
+                                (st == WIFI_CONNECT_FAILED)       ? "failed"     : "idle";
+        char buf[128];
+        const char *ip = wifi_sta_get_ip();
+        if (ip && ip[0])
+            snprintf(buf, sizeof(buf), "{\"event\":\"sta_update\",\"state\":\"%s\",\"ip\":\"%s\"}",
+                     state_str, ip);
+        else
+            snprintf(buf, sizeof(buf), "{\"event\":\"sta_update\",\"state\":\"%s\"}", state_str);
+        broadcast_text(buf);
+        if (st == WIFI_CONNECT_CONNECTED) {
+            emit_log("STA connected: %s", ip ? ip : "(no IP)");
+            break;
+        }
+        if (st == WIFI_CONNECT_FAILED) {
+            emit_log("STA connect failed");
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    if (s_op_stop_cb) s_op_stop_cb("sta");
+    vTaskDelete(NULL);
+}
+
+// ---------- command dispatch ----------
+
+static void handle_command(httpd_req_t *req, const char *json_str) {
+    cJSON *root = cJSON_Parse(json_str);
+    if (!root) return;
+
+    cJSON *cmd_j = cJSON_GetObjectItem(root, "cmd");
+    const char *cmd = cmd_j ? cJSON_GetStringValue(cmd_j) : NULL;
+    if (!cmd) { cJSON_Delete(root); return; }
+
+    if (!strcmp(cmd, "get_state")) {
+        cJSON *state = build_state_json();
+        char *s = cJSON_PrintUnformatted(state);
+        if (s) {
+            send_to_fd(httpd_req_to_sockfd(req), s);
+            free(s);
+        }
+        cJSON_Delete(state);
+
+    } else if (!strcmp(cmd, "scan_start")) {
+        xTaskCreate(scan_task, "webui_scan", 4096, NULL, 4, NULL);
+
+    } else if (!strcmp(cmd, "scan_get")) {
+        push_scan_done();
+
+    } else if (!strcmp(cmd, "sniff_start")) {
+        xTaskCreate(sniff_monitor_task, "webui_sniff", 4096, NULL, 4, NULL);
+
+    } else if (!strcmp(cmd, "sniff_stop")) {
+        wifi_sniff_stop();
+        if (s_op_stop_cb) s_op_stop_cb("sniff");
+        broadcast_text("{\"event\":\"sniff_update\",\"count\":0,\"clients\":[]}");
+
+    } else if (!strcmp(cmd, "sta_connect")) {
+        cJSON *ssid_j = cJSON_GetObjectItem(root, "ssid");
+        cJSON *pw_j   = cJSON_GetObjectItem(root, "password");
+        cJSON *sec_j  = cJSON_GetObjectItem(root, "security");
+        if (ssid_j && cJSON_IsString(ssid_j)) {
+            sta_connect_arg_t *a = calloc(1, sizeof(sta_connect_arg_t));
+            strncpy(a->ssid, ssid_j->valuestring, 32);
+            if (pw_j && cJSON_IsString(pw_j))
+                strncpy(a->password, pw_j->valuestring, 64);
+            a->security = (sec_j && cJSON_IsNumber(sec_j)) ?
+                          (uint8_t)sec_j->valuedouble : 3;
+            xTaskCreate(sta_task, "webui_sta", 4096, a, 4, NULL);
+        }
+
+    } else if (!strcmp(cmd, "sta_stop")) {
+        wifi_sta_stop();
+        if (s_op_stop_cb) s_op_stop_cb("sta");
+        broadcast_text("{\"event\":\"sta_update\",\"state\":\"idle\"}");
+
+    } else if (!strcmp(cmd, "pmkid_start")) {
+        cJSON *b = cJSON_GetObjectItem(root, "bssid");
+        if (b && cJSON_IsString(b)) {
+            char *bssid = strdup(b->valuestring);
+            xTaskCreate(pmkid_task, "webui_pmkid", 4096, bssid, 4, NULL);
+        }
+
+    } else if (!strcmp(cmd, "pmkid_stop")) {
+        emit_log("Stopping PMKID hunt");
+        wifi_pmkid_stop();
+        if (s_op_stop_cb) s_op_stop_cb("pmkid");
+
+    } else if (!strcmp(cmd, "hs_start")) {
+        cJSON *b = cJSON_GetObjectItem(root, "bssid");
+        if (b && cJSON_IsString(b)) {
+            char *bssid = strdup(b->valuestring);
+            xTaskCreate(hs_task, "webui_hs", 4096, bssid, 4, NULL);
+        }
+
+    } else if (!strcmp(cmd, "hs_deauth")) {
+        emit_log("Sending deauth burst to flush handshake");
+        wifi_handshake_select();
+
+    } else if (!strcmp(cmd, "hs_stop")) {
+        emit_log("Stopping handshake hunt");
+        wifi_handshake_stop();
+        if (s_op_stop_cb) s_op_stop_cb("hs");
+
+    } else if (!strcmp(cmd, "exit")) {
+        broadcast_text("{\"event\":\"server_stopping\"}");
+        vTaskDelay(pdMS_TO_TICKS(50));
+        wifi_webui_stop();
+    }
+
+    cJSON_Delete(root);
+}
+
+// ---------- WebSocket handler ----------
+
+static esp_err_t ws_handler(httpd_req_t *req) {
+    if (req->method == HTTP_GET) {
+        int fd = httpd_req_to_sockfd(req);
+        ws_fd_add(fd);
+        ESP_LOGI(TAG, "WS client connected fd=%d", fd);
+        push_state_to_fd(fd);
+        return ESP_OK;
+    }
+
+    httpd_ws_frame_t frame = {0};
+    frame.type = HTTPD_WS_TYPE_TEXT;
+
+    esp_err_t ret = httpd_ws_recv_frame(req, &frame, 0);
+    if (ret != ESP_OK || frame.len == 0 || frame.len > 512) {
+        if (frame.len == 0 && frame.type == HTTPD_WS_TYPE_CLOSE) {
+            ws_fd_remove(httpd_req_to_sockfd(req));
+        }
+        return ESP_OK;
+    }
+
+    uint8_t buf[513] = {0};
+    frame.payload = buf;
+    ret = httpd_ws_recv_frame(req, &frame, frame.len);
+    if (ret != ESP_OK) return ESP_FAIL;
+
+    handle_command(req, (char *)buf);
+    return ESP_OK;
+}
+
+// ---------- URI handler registration ----------
+
+static void register_uri_handlers(void) {
+    httpd_uri_t r_root    = { .uri = "/",               .method = HTTP_GET, .handler = root_handler };
+    httpd_uri_t r_ws      = { .uri = "/ws",             .method = HTTP_GET, .handler = ws_handler,
+                               .is_websocket = true };
+    httpd_uri_t r_pmkid   = { .uri = "/pmkid.log",      .method = HTTP_GET, .handler = pmkid_log_handler };
+    httpd_uri_t r_hshk    = { .uri = "/handshakes.log", .method = HTTP_GET, .handler = handshake_log_handler };
+    httpd_uri_t r_entry   = { .uri = "/entry",          .method = HTTP_GET, .handler = entry_handler };
+    httpd_uri_t r_caps    = { .uri = "/captures",       .method = HTTP_GET, .handler = captures_json_handler };
+
+    httpd_register_uri_handler(s_httpd, &r_root);
+    httpd_register_uri_handler(s_httpd, &r_ws);
+    httpd_register_uri_handler(s_httpd, &r_pmkid);
+    httpd_register_uri_handler(s_httpd, &r_hshk);
+    httpd_register_uri_handler(s_httpd, &r_entry);
+    httpd_register_uri_handler(s_httpd, &r_caps);
+}
+
+// ---------- OLED render ----------
+
+void wifi_webui_render(void) {
+    char hdr_r[12];
+    snprintf(hdr_r, sizeof(hdr_r), "%u client%s",
+             (unsigned)s_clients, s_clients == 1 ? "" : "s");
+
+    ssd1306_clear_buffer();
+    ssd1306_draw_header("Remote WebUI", hdr_r);
+    ssd1306_draw_string(0, 2, "WiFiend-Remote");
+    ssd1306_draw_string(0, 3, "192.168.4.1");
+
+    char line[17];
+    if (s_restarting) {
+        ssd1306_draw_string(0, 4, "WiFi restart..");
+    } else if (s_clients == 0) {
+        ssd1306_draw_string(0, 4, "Waiting...");
+    } else {
+        snprintf(line, sizeof(line), "%u connected", (unsigned)s_clients);
+        ssd1306_draw_string(0, 4, line);
+    }
+
+    uint8_t batt = battery_get_percentage();
+    if (batt != 0xFF)
+        snprintf(line, sizeof(line), "Batt: %u%%", (unsigned)batt);
+    else
+        snprintf(line, sizeof(line), "Batt: --");
+    ssd1306_draw_string(0, 5, line);
+
+    int64_t up_s = esp_timer_get_time() / 1000000LL;
+    int up_h = (int)((up_s / 3600) % 24);
+    int up_m = (int)((up_s / 60) % 60);
+    snprintf(line, sizeof(line), "Up:%02dh %02dm", up_h, up_m);
+    ssd1306_draw_string(0, 6, line);
+
+    ssd1306_draw_string(0, 7, "Long>menu");
+    ssd1306_flush();
+}
+
+// ---------- Public API ----------
+
+void wifi_webui_init(void) {
+    if (!s_ws_mutex) s_ws_mutex = xSemaphoreCreateMutex();
+    for (int i = 0; i < MAX_WS_CLIENTS; i++) s_ws_fds[i] = -1;
+}
+
+void wifi_webui_enter(void) {
+    if (s_running) return;
+    s_clients    = 0;
+    s_restarting = false;
+    esp_wifi_stop();
+    start_ap_and_httpd();
+    s_running = true;
+    s_refresh = true;
+}
+
+void wifi_webui_stop(void) {
+    if (!s_running) return;
+    // Halt any operation that could outlive the WebUI (e.g. a cross-band deauth
+    // the user is escaping from via the encoder after the phone dropped).
+    if (wifi_attack_is_running()) wifi_attack_stop();
+    s_running = false;   // signals monitor tasks (sniffer) to exit their loops
+    stop_ap_and_httpd();
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_start();
+    s_running    = false;
+    s_clients    = 0;
+    s_refresh    = false;
+    s_restarting = false;
+    ESP_LOGI(TAG, "WebUI stopped");
+}
+
+bool wifi_webui_is_running(void)    { return s_running; }
+bool wifi_webui_needs_refresh(void) {
+    bool v = s_refresh;
+    s_refresh = false;
+    return v;
+}
+
+void wifi_webui_set_op_callbacks(webui_op_start_cb_t on_start,
+                                 webui_op_stop_cb_t  on_stop) {
+    s_op_start_cb = on_start;
+    s_op_stop_cb  = on_stop;
+}

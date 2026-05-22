@@ -23,10 +23,12 @@ void    wifi_pmkid_view_next(void);
 void    wifi_pmkid_stop(void);
 void    wifi_pmkid_render(void);
 
-bool    wifi_pmkid_is_running(void);
-bool    wifi_pmkid_needs_refresh(void);
-bool    wifi_pmkid_is_in_picker(void);
-bool    wifi_pmkid_is_captured(void);
-uint8_t wifi_pmkid_get_count(void);
+bool         wifi_pmkid_is_running(void);
+bool         wifi_pmkid_needs_refresh(void);
+bool         wifi_pmkid_is_in_picker(void);
+bool         wifi_pmkid_is_captured(void);
+uint8_t      wifi_pmkid_get_count(void);
+const char  *wifi_pmkid_get_target(void);
+uint16_t     wifi_pmkid_get_frames(void);
 
 #endif

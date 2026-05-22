@@ -11,7 +11,10 @@ void wifi_attack_scroll_up(void);
 void wifi_attack_scroll_down(void);
 void wifi_attack_select(void);      // confirm selected AP and start attack
 void wifi_attack_stop(void);
-bool wifi_attack_is_running(void);
-void wifi_attack_render(void);      // renders picker or live attack stats
+bool         wifi_attack_is_running(void);
+void         wifi_attack_render(void);
+uint32_t     wifi_attack_get_frames(void);
+const char  *wifi_attack_get_target(void);
+int64_t      wifi_attack_get_elapsed_ms(void);
 
 #endif

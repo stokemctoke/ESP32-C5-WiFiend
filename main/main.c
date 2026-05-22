@@ -28,6 +28,10 @@
 #include "wifi_pmkid.h"
 #include "wifi_handshake.h"
 #include "wifi_captures.h"
+#include "wifi_webui.h"
+#include "game_pong.h"
+#include "game_life.h"
+#include "game_react.h"
 
 static const char *TAG = "main";
 
@@ -41,6 +45,10 @@ static volatile bool info_active     = false;
 static volatile bool pmkid_active    = false;
 static volatile bool handshake_active = false;
 static volatile bool captures_active  = false;
+static volatile bool webui_active     = false;
+static volatile bool game_active      = false;
+static volatile bool life_active      = false;
+static volatile bool react_active     = false;
 
 // Forward declarations for mutual callback references
 static void encoder_event_handler(encoder_event_t event);
@@ -55,6 +63,10 @@ static void info_render(void);
 static void pmkid_encoder_handler(encoder_event_t event);
 static void handshake_encoder_handler(encoder_event_t event);
 static void captures_encoder_handler(encoder_event_t event);
+static void webui_encoder_handler(encoder_event_t event);
+static void game_encoder_handler(encoder_event_t event);
+static void life_encoder_handler(encoder_event_t event);
+static void react_encoder_handler(encoder_event_t event);
 
 static void detail_encoder_handler(encoder_event_t event) {
     if (event == ENCODER_LONG_PRESS) {
@@ -388,6 +400,102 @@ static void menu_captures(void) {
     wifi_captures_render();
 }
 
+static void on_webui_op_start(const char *op) {
+    if      (!strcmp(op, "scan"))    scanner_active   = true;
+    else if (!strcmp(op, "sniff"))   sniffer_active   = true;
+    else if (!strcmp(op, "attack"))  attack_active    = true;
+    else if (!strcmp(op, "ap"))      ap_active        = true;
+    else if (!strcmp(op, "sta"))     sta_active       = true;
+    else if (!strcmp(op, "pmkid"))   pmkid_active     = true;
+    else if (!strcmp(op, "hs"))      handshake_active = true;
+}
+
+static void on_webui_op_stop(const char *op) {
+    if      (!strcmp(op, "scan"))    scanner_active   = false;
+    else if (!strcmp(op, "sniff"))   sniffer_active   = false;
+    else if (!strcmp(op, "attack"))  attack_active    = false;
+    else if (!strcmp(op, "ap"))      ap_active        = false;
+    else if (!strcmp(op, "sta"))     sta_active       = false;
+    else if (!strcmp(op, "pmkid"))   pmkid_active     = false;
+    else if (!strcmp(op, "hs"))      handshake_active = false;
+    neopixel_set_color(COLOR_CYAN);
+}
+
+static void webui_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        wifi_webui_stop();
+        webui_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    }
+}
+
+static void menu_webui(void) {
+    webui_active = true;
+    neopixel_set_color(COLOR_CYAN);
+    encoder_set_callback(webui_encoder_handler);
+    wifi_webui_set_op_callbacks(on_webui_op_start, on_webui_op_stop);
+    wifi_webui_enter();
+    wifi_webui_render();
+}
+
+static void game_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        game_pong_stop();
+        game_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        game_pong_input(event);
+    }
+}
+
+static void menu_game(void) {
+    game_active = true;
+    neopixel_set_color(COLOR_MAGENTA);
+    encoder_set_callback(game_encoder_handler);
+    game_pong_enter();   // game renders from its own task
+}
+
+static void life_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        game_life_stop();
+        life_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        game_life_input(event);
+    }
+}
+
+static void menu_life(void) {
+    life_active = true;
+    neopixel_set_color(COLOR_MAGENTA);
+    encoder_set_callback(life_encoder_handler);
+    game_life_enter();   // seed screen, then sim renders from its own task
+}
+
+static void react_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        game_react_stop();
+        react_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        game_react_input(event);
+    }
+}
+
+static void menu_react(void) {
+    react_active = true;
+    encoder_set_callback(react_encoder_handler);
+    game_react_enter();  // reaction test runs from its own task (drives the LED)
+}
+
 static void info_render(void) {
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -469,7 +577,7 @@ static void menu_device_info(void) {
     info_render();
 }
 
-static menu_item_t main_menu[] = {
+static menu_item_t wifi_menu[] = {
     {.label = "WiFi Scan",     .on_select = menu_wifi_scanner},
     {.label = "Client Sniff",  .on_select = menu_wifi_sniffer},
     {.label = "AP Mode",       .on_select = menu_ap_mode},
@@ -478,8 +586,35 @@ static menu_item_t main_menu[] = {
     {.label = "PMKID Capture", .on_select = menu_pmkid},
     {.label = "Handshake Cap", .on_select = menu_handshake},
     {.label = "Captures",      .on_select = menu_captures},
+    {.label = "Remote WebUI",  .on_select = menu_webui},
     {.label = "Ch Chart",      .on_select = menu_ch_chart},
+};
+
+static menu_item_t bluetooth_menu[] = {
+    {.label = "(coming soon)", .on_select = NULL},
+};
+
+static menu_item_t games_menu[] = {
+    {.label = "Pong",          .on_select = menu_game},
+    {.label = "Game of Life",  .on_select = menu_life},
+    {.label = "Reaction Test", .on_select = menu_react},
+};
+
+static menu_item_t settings_menu[] = {
     {.label = "Device Info",   .on_select = menu_device_info},
+    {.label = "(more soon)",   .on_select = NULL},
+};
+
+static void open_wifi_menu(void)      { menu_push_submenu(wifi_menu,      sizeof(wifi_menu)      / sizeof(wifi_menu[0])); }
+static void open_bluetooth_menu(void) { menu_push_submenu(bluetooth_menu, sizeof(bluetooth_menu) / sizeof(bluetooth_menu[0])); }
+static void open_games_menu(void)     { menu_push_submenu(games_menu,     sizeof(games_menu)     / sizeof(games_menu[0])); }
+static void open_settings_menu(void)  { menu_push_submenu(settings_menu,  sizeof(settings_menu)  / sizeof(settings_menu[0])); }
+
+static menu_item_t main_menu[] = {
+    {.label = "WiFi",      .on_select = open_wifi_menu},
+    {.label = "Bluetooth", .on_select = open_bluetooth_menu},
+    {.label = "Games",     .on_select = open_games_menu},
+    {.label = "Settings",  .on_select = open_settings_menu},
 };
 
 static void encoder_event_handler(encoder_event_t event) {
@@ -494,7 +629,7 @@ static void encoder_event_handler(encoder_event_t event) {
             break;
         case ENCODER_CLICK:
             menu_select_current();
-            if (!scanner_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active) menu_render();
+            if (!scanner_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active && !webui_active && !game_active && !life_active && !react_active) menu_render();
             break;
         case ENCODER_LONG_PRESS:
             menu_pop();
@@ -553,6 +688,7 @@ void app_main(void) {
     wifi_pmkid_init();
     wifi_handshake_init();
     wifi_captures_init();
+    wifi_webui_init();
 
     menu_init(main_menu, sizeof(main_menu) / sizeof(main_menu[0]));
     encoder_set_callback(encoder_event_handler);
@@ -560,13 +696,14 @@ void app_main(void) {
     ESP_LOGI(TAG, "Boot complete");
 
     while (1) {
-        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active) menu_render();
+        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active && !webui_active && !game_active && !life_active && !react_active) menu_render();
         if (attack_active && wifi_attack_is_running()) wifi_attack_render();
         if (ap_active && wifi_ap_is_running()) wifi_ap_render();
         if (sta_active && (wifi_sta_is_connecting() || wifi_sta_needs_refresh())) wifi_sta_render();
         if (pmkid_active && (wifi_pmkid_is_running() || wifi_pmkid_needs_refresh())) wifi_pmkid_render();
         if (handshake_active && (wifi_handshake_is_running() || wifi_handshake_needs_refresh())) wifi_handshake_render();
         if (captures_active && wifi_captures_needs_refresh()) wifi_captures_render();
+        if (webui_active && wifi_webui_needs_refresh()) wifi_webui_render();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

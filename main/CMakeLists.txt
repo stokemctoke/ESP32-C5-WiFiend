@@ -15,7 +15,12 @@ idf_component_register(
         wifi_handshake.c
         wifi_captures.c
         captures_http.c
+        wifi_webui.c
         captive_portal.c
+        game_pong.c
+        game_life.c
+        game_react.c
+        hiscore.c
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         nvs_flash

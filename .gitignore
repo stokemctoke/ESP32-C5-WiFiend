@@ -1,3 +1,6 @@
+# Documents and notes
+KICKSTARTER_INFO.md
+
 # ESP-IDF build output
 build/
 sdkconfig.old

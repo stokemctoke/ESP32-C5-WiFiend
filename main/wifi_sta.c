@@ -371,3 +371,19 @@ void wifi_sta_render(void) {
         case STA_STATE_FAILED:     render_failed();     break;
     }
 }
+
+void wifi_sta_connect_direct(const char *ssid, uint8_t security, const char *password) {
+    strncpy(sel_ssid, ssid, sizeof(sel_ssid) - 1);
+    sel_ssid[sizeof(sel_ssid) - 1] = '\0';
+    sel_security = security;
+    sel_channel  = 0;
+    pw_len = 0;
+    memset(pw_buf, 0, sizeof(pw_buf));
+    if (password && password[0]) {
+        size_t plen = strlen(password);
+        if (plen > sizeof(pw_buf) - 1) plen = sizeof(pw_buf) - 1;
+        memcpy(pw_buf, password, plen);
+        pw_len = (uint8_t)plen;
+    }
+    do_connect();
+}

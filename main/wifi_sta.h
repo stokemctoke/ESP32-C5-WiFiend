@@ -30,5 +30,6 @@ bool wifi_sta_is_in_password(void);
 bool wifi_sta_needs_refresh(void);  // true once after async state change
 wifi_connect_state_t wifi_sta_get_state(void);
 const char *wifi_sta_get_ip(void);
+void wifi_sta_connect_direct(const char *ssid, uint8_t security, const char *password);
 
 #endif

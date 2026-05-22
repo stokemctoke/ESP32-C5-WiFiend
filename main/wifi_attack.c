@@ -232,3 +232,10 @@ void wifi_attack_render(void) {
         render_picker();
     }
 }
+
+uint32_t    wifi_attack_get_frames(void)      { return packets_sent; }
+const char *wifi_attack_get_target(void)      { return target_ssid; }
+int64_t     wifi_attack_get_elapsed_ms(void)  {
+    if (!attacking || attack_start_us == 0) return 0;
+    return (esp_timer_get_time() - attack_start_us) / 1000LL;
+}

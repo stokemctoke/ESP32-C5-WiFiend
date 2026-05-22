@@ -22,6 +22,7 @@ void wifi_sniff_scroll_up(void);
 void wifi_sniff_scroll_down(void);
 void wifi_sniff_render(void);
 void wifi_sniff_render_detail(void);
-uint16_t wifi_sniff_get_count(void);
+uint16_t                wifi_sniff_get_count(void);
+const wifi_client_t    *wifi_sniff_get_client(uint16_t idx);
 
 #endif
