@@ -124,12 +124,12 @@ static void tick(void) {
         }
     }
 
-    // Difficulty: within-game points + a bonus for rounds already won, so the
-    // CPU starts clumsy in round 1 and sharpens the deeper you climb.
-    int prog = score_p + score_ai + rounds_won * 3;
-    int ai_speed = 1 + prog / 6;
-    if (ai_speed > 3) ai_speed = 3;
-    int tol = 12 - prog;
+    // CPU skill is purely round-based: it steps up each round won and holds for
+    // that round's 3 games (no per-game reset), so the run gets steadily harder
+    // round by round. Round 1 is deliberately clumsy; ~round 6-8 it peaks.
+    int ai_speed = 1 + rounds_won / 2;     // r0:1  r2:2  r4:3  r6+:4
+    if (ai_speed > 4) ai_speed = 4;
+    int tol = 9 - rounds_won;              // r0:9 (loose) ... r8+:1 (tight)
     if (tol < 1) tol = 1;
 
     int ai_center   = ai_y + PADDLE_H / 2;
