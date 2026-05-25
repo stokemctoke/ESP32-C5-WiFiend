@@ -32,6 +32,11 @@
 #include "game_pong.h"
 #include "game_life.h"
 #include "game_react.h"
+#include "ble_core.h"
+#include "ble_scan.h"
+#include "ble_class.h"
+#include "ble_beacon.h"
+#include "ble_hunt.h"
 
 static const char *TAG = "main";
 
@@ -49,6 +54,10 @@ static volatile bool webui_active     = false;
 static volatile bool game_active      = false;
 static volatile bool life_active      = false;
 static volatile bool react_active     = false;
+static volatile bool ble_scan_active   = false;
+static volatile bool ble_class_active  = false;
+static volatile bool ble_beacon_active = false;
+static volatile bool ble_hunt_active   = false;
 
 // Forward declarations for mutual callback references
 static void encoder_event_handler(encoder_event_t event);
@@ -67,6 +76,10 @@ static void webui_encoder_handler(encoder_event_t event);
 static void game_encoder_handler(encoder_event_t event);
 static void life_encoder_handler(encoder_event_t event);
 static void react_encoder_handler(encoder_event_t event);
+static void ble_scan_encoder_handler(encoder_event_t event);
+static void ble_class_encoder_handler(encoder_event_t event);
+static void ble_beacon_encoder_handler(encoder_event_t event);
+static void ble_hunt_encoder_handler(encoder_event_t event);
 
 static void detail_encoder_handler(encoder_event_t event) {
     if (event == ENCODER_LONG_PRESS) {
@@ -496,6 +509,82 @@ static void menu_react(void) {
     game_react_enter();  // reaction test runs from its own task (drives the LED)
 }
 
+static void ble_scan_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        ble_scan_exit();
+        ble_scan_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        ble_scan_input(event);
+    }
+}
+static void menu_ble_scan(void) {
+    ble_scan_active = true;
+    neopixel_set_color(COLOR_BLUE);
+    encoder_set_callback(ble_scan_encoder_handler);
+    ble_core_init();
+    ble_scan_enter();
+}
+
+static void ble_class_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        ble_class_exit();
+        ble_class_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        ble_class_input(event);
+    }
+}
+static void menu_ble_class(void) {
+    ble_class_active = true;
+    neopixel_set_color(COLOR_BLUE);
+    encoder_set_callback(ble_class_encoder_handler);
+    ble_core_init();
+    ble_class_enter();
+}
+
+static void ble_beacon_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        ble_beacon_exit();
+        ble_beacon_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        ble_beacon_input(event);
+    }
+}
+static void menu_ble_beacon(void) {
+    ble_beacon_active = true;
+    neopixel_set_color(COLOR_BLUE);
+    encoder_set_callback(ble_beacon_encoder_handler);
+    ble_core_init();
+    ble_beacon_enter();
+}
+
+static void ble_hunt_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        ble_hunt_exit();
+        ble_hunt_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        ble_hunt_input(event);
+    }
+}
+static void menu_ble_hunt(void) {
+    ble_hunt_active = true;
+    neopixel_set_color(COLOR_BLUE);
+    encoder_set_callback(ble_hunt_encoder_handler);
+    ble_core_init();
+    ble_hunt_enter();
+}
+
 static void info_render(void) {
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -591,7 +680,10 @@ static menu_item_t wifi_menu[] = {
 };
 
 static menu_item_t bluetooth_menu[] = {
-    {.label = "(coming soon)", .on_select = NULL},
+    {.label = "BLE Scanner",   .on_select = menu_ble_scan},
+    {.label = "Classifier",    .on_select = menu_ble_class},
+    {.label = "Beacons",       .on_select = menu_ble_beacon},
+    {.label = "Device Hunter", .on_select = menu_ble_hunt},
 };
 
 static menu_item_t games_menu[] = {
@@ -629,7 +721,7 @@ static void encoder_event_handler(encoder_event_t event) {
             break;
         case ENCODER_CLICK:
             menu_select_current();
-            if (!scanner_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active && !webui_active && !game_active && !life_active && !react_active) menu_render();
+            if (!scanner_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active && !webui_active && !game_active && !life_active && !react_active && !ble_scan_active && !ble_class_active && !ble_beacon_active && !ble_hunt_active) menu_render();
             break;
         case ENCODER_LONG_PRESS:
             menu_pop();
@@ -696,7 +788,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "Boot complete");
 
     while (1) {
-        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active && !webui_active && !game_active && !life_active && !react_active) menu_render();
+        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active && !webui_active && !game_active && !life_active && !react_active && !ble_scan_active && !ble_class_active && !ble_beacon_active && !ble_hunt_active) menu_render();
         if (attack_active && wifi_attack_is_running()) wifi_attack_render();
         if (ap_active && wifi_ap_is_running()) wifi_ap_render();
         if (sta_active && (wifi_sta_is_connecting() || wifi_sta_needs_refresh())) wifi_sta_render();
@@ -704,6 +796,11 @@ void app_main(void) {
         if (handshake_active && (wifi_handshake_is_running() || wifi_handshake_needs_refresh())) wifi_handshake_render();
         if (captures_active && wifi_captures_needs_refresh()) wifi_captures_render();
         if (webui_active && wifi_webui_needs_refresh()) wifi_webui_render();
+        if (sniffer_active) { wifi_sniff_render(); neopixel_pulse(COLOR_MAGENTA); }
+        if (ble_scan_active)   { ble_scan_tick();   neopixel_pulse(COLOR_BLUE); }
+        if (ble_class_active)  { ble_class_tick();  neopixel_pulse(COLOR_BLUE); }
+        if (ble_beacon_active) { ble_beacon_tick(); neopixel_pulse(COLOR_BLUE); }
+        if (ble_hunt_active)     ble_hunt_tick();   // hunt drives its own LED (RSSI colour)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

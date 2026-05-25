@@ -21,6 +21,12 @@ idf_component_register(
         game_life.c
         game_react.c
         hiscore.c
+        ble_core.c
+        ble_scan.c
+        ble_ident.c
+        ble_class.c
+        ble_beacon.c
+        ble_hunt.c
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         nvs_flash
@@ -36,6 +42,7 @@ idf_component_register(
         lwip
         spi_flash
         joltwallet__littlefs
+        bt
 )
 
 # Patched libnet80211 must appear before ESP-IDF's stock version so its

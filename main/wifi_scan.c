@@ -1,5 +1,6 @@
 #include "wifi_scan.h"
 #include "ssd1306.h"
+#include "neopixel.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -73,8 +74,11 @@ uint16_t wifi_scan_start(void) {
         snprintf(row, sizeof(row), "  Scanning... %c", spin[frame++ & 3]);
         ssd1306_draw_string(0, 4, row);
         ssd1306_flush();
+        neopixel_pulse(COLOR_YELLOW);
         vTaskDelay(pdMS_TO_TICKS(250));
     }
+    // Scan complete — solid yellow while browsing the result list
+    neopixel_set_color(COLOR_YELLOW);
 
     uint16_t count = MAX_SCAN_RESULTS;
     err = esp_wifi_scan_get_ap_records(&count, ap_records);

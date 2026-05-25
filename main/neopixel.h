@@ -13,6 +13,11 @@ void neopixel_init(void);
 void neopixel_set_color(pixel_color_t color);
 void neopixel_set_brightness(uint8_t brightness);
 
+// Call periodically (e.g. from a render tick) to make the LED breathe in the
+// given base colour. Each call advances an internal phase by one step; a full
+// pulse cycle is ~20 calls.
+void neopixel_pulse(pixel_color_t base);
+
 // MAKE_COLOR avoids colliding with ESP-IDF LCD component's RGB macro
 #define MAKE_COLOR(r, g, b) ((pixel_color_t){r, g, b})
 #define COLOR_RED     MAKE_COLOR(255,   0,   0)
