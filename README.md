@@ -11,7 +11,7 @@
 
 An interactive, menu-driven WiFi pen-testing handheld built on the XIAO ESP32-C5. Navigate modes with a rotary encoder, monitor status on a 0.96" OLED, and control everything from a compact perfboard build powered by a 3.7V LiPo.
 
-Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame injection engine, channel scanner, client sniffer, evil-twin AP with captive portal, STA connect, PMKID capture, WPA handshake capture, and on-device capture management — all menu-driven from a single rotary encoder. Captures are written to LittleFS on the 8MB flash and exportable in hashcat-22000 format. A **Remote WebUI** serves a phone-friendly monitoring/scan/capture dashboard over its own soft-AP, and a **Games** menu (Pong, Conway's Game of Life, Reaction Test) with persistent hi-scores rounds out the build.
+Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame injection engine, channel scanner, client sniffer, evil-twin AP with captive portal, STA connect, PMKID capture, WPA handshake capture, and on-device capture management — all menu-driven from a single rotary encoder. Captures are written to LittleFS on the 8MB flash and exportable in hashcat-22000 format. A **Remote WebUI** serves a phone-friendly monitoring/scan/capture dashboard over its own soft-AP, a **Bluetooth** menu adds BLE recon (scanner, classifier, beacon decoder, RSSI hunter) via the NimBLE host running concurrently with Wi-Fi, and a **Games** menu (Pong, Conway's Game of Life, Reaction Test) with persistent hi-scores rounds out the build.
 
 ---
 
@@ -65,9 +65,9 @@ The 0.96" SSD1306 has a yellow/blue physical colour split. The firmware uses thi
 └──────────────────┘
 ```
 
-The main menu is organised into categories. **WiFi** holds Scan, Client Sniff, AP Mode, Deauth, STA Connect, PMKID, Handshake, Captures, Remote WebUI and Ch Chart; **Games** holds Pong, Game of Life and Reaction Test; **Settings** holds Device Info; **Bluetooth** is a stub for the next initiative. Submenus show a "Long-press = Back" hint.
+The main menu is organised into categories. **WiFi** holds Scan, Client Sniff, AP Mode, Deauth, STA Connect, PMKID, Handshake, Captures, Remote WebUI and Ch Chart; **Bluetooth** holds BLE Scanner, Classifier, Beacons, and Device Hunter; **Games** holds Pong, Game of Life and Reaction Test; **Settings** holds Device Info. Submenus show a "Long-press = Back" hint.
 
-NeoPixel colour per mode: green = idle, yellow = scanning / hunting, cyan = results / captures view / WebUI, red = deauth, magenta = STA connect / games, and a rainbow cycle while Game of Life runs.
+NeoPixel colour per mode: green = idle, yellow = WiFi scanning, cyan = results / captures view / WebUI, red = deauth, magenta = sniffer / STA connect / games, blue = BLE recon, and a rainbow cycle while Game of Life runs. Active scans (WiFi, sniffer, BLE) drive a smooth gamma-corrected "breathing" animation via a dedicated 40 Hz timer, so the LED visibly signals work in progress without coarse stepping.
 
 ---
 
@@ -132,20 +132,49 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [x] **Reaction Test** — NeoPixel flashes a colour; match the shuffled colour-word and click within the level window. 3 lives, window tightens 0.1s per level; faster = more points.
 - [x] **Persistent hi-scores** — shared NVS-backed top-10 table (arcade 3-letter names, scrollable) for Pong and Reaction; survives reboots and reflashes.
 
+**Bluetooth (BLE — Phase 1: read-only recon)**
+- [x] **BLE Scanner** — NimBLE observer-mode active GAP discovery; deduped result table sorted by RSSI; per-AP detail with MAC, address type (public/random), connectable flag, vendor company ID, advertised 16-bit service UUID, appearance, and the classified device type
+- [x] **Device Classifier** — same scan, list annotated with a type label derived from company ID + service UUIDs + appearance (e.g. Phone / Wearable / iBeacon / Fast Pair / Apple / Microsoft / Google)
+- [x] **Beacons** — filtered iBeacon + Eddystone view with full payload decode (UUID/major/minor/TxPower for iBeacon; URL/UID/TLM for Eddystone, including the scheme/suffix expansion)
+- [x] **Device Hunter** — RSSI proximity locator; pick a device, then a live-updating bar + peak marker, and the NeoPixel ramps red → orange → yellow → green by signal strength
+- [x] **Wi-Fi / BLE coexistence** — NimBLE runs concurrently with the active Wi-Fi STA; SW coexistence enabled in `sdkconfig`. The Bluetooth submenu adds ~340 KB to the app image, well inside the 3 MB factory partition
+
+**Polish**
+- [x] **Smooth NeoPixel breathing** — dedicated 40 Hz `esp_timer` drives a cubic-gamma triangle wave with a higher internal peak (independent of ambient brightness) so the active-scan LED animation looks fluid instead of stepped
+- [x] **Client Sniffer auto-refresh** — main loop now re-renders the sniffer while active; clients appear without needing an encoder twist
+
 **Other**
 - [x] **Device Info** — stateful screen showing MAC, free heap, flash size, chip revision, IDF version, uptime, WiFi mode
 
 ### Upcoming
 
-**Transfer methods** (reusable across all on-device capture features)
-- [ ] BLE file transfer — Nordic UART Service streams captures to a phone; ties into wardriving phone-link plans
+**BLE Phase 1.5 — recon polish**
+- [ ] Expanded company-name table (more vendors decoded from the manufacturer ID we already capture)
+- [ ] Apple Continuity decode — label AirDrop / Handoff / Nearby-Action / AirPods etc. from the message-type byte in Apple's mfg data
+- [ ] MAC OUI vendor lookup for public addresses
+- [ ] Raw advertisement hex dump in the detail screen
+- [ ] BLE scan list sort-by-RSSI option
 
-**Bluetooth menu** (next major initiative, after WiFi side is fully polished)
-- [ ] Bluetooth submenu — BLE scan, BLE advertise/spam, BLE sniffer, phone-link mode
+**BLE Phase 2 — active / connection-based**
+- [ ] GATT Explorer — connect, enumerate services + characteristics, read values
+- [ ] Notify Monitor — connect + subscribe to a characteristic, show live values
+- [ ] GATT name lookup — read Device Name (0x2A00) to label currently-unnamed devices
+- [ ] BLE HID injector ("BadBLE") — present as a BLE keyboard, deliver a stored payload to a paired host
+- [ ] BLE UART (NUS) phone-link — Nordic UART Service for capture transfer + remote control
+- [ ] Advertisement Logger — passive capture of adv packets to LittleFS (BLE wardriving)
+- [ ] BLE Spam / Custom Beacon Broadcaster — Apple/Google/Samsung pop-up flood, iBeacon/Eddystone broadcast
+
+**Storage**
+- [ ] LittleFS file explorer — Settings entry to list `/lfs/*`, see sizes, delete or dump-to-serial. Useful for clearing handshake / PMKID captures
+- [ ] BLE file transfer — pairs with the BLE UART (NUS) work above
+
+**WebUI**
+- [ ] BLE Devices tab — live BLE scan results in the dashboard browser, with classifier labels
+- [ ] Font-match the WebUI to stokemctoke.com
 
 **WiFi polish**
-- [ ] Fix Client Sniff click-to-render delay (rotary encoder twist needed for first render)
 - [ ] WiFi Client Sniffer 5GHz — extend channel hop table to include 5GHz channels
+- [ ] PMKID / Handshake first-render lag (same family as the sniffer fix)
 
 **Hardware**
 - [ ] Battery power system — TP4056 charger, slide switch, LiPo (v2 hardware build)
@@ -183,6 +212,12 @@ main/
 ├── captures_http.c    — HTTP serving of capture logs
 ├── wifi_webui.c/h     — Remote WebUI dashboard (soft-AP, HTTP + WebSocket)
 ├── webui_html.h       — embedded single-page web app (HTML/CSS/JS)
+├── ble_core.c/h       — NimBLE host bring-up (init, sync, host task)
+├── ble_scan.c/h       — shared GAP discovery + result table + Scanner UI
+├── ble_ident.c/h      — pure helpers: device classifier + iBeacon/Eddystone decoders
+├── ble_class.c/h      — Classifier view (scan list + type labels)
+├── ble_beacon.c/h     — Beacon decoder view
+├── ble_hunt.c/h       — Device Hunter (RSSI proximity, NeoPixel ramp)
 ├── game_pong.c/h      — Pong (win-streak hi-score)
 ├── game_life.c/h      — Conway's Game of Life (seeded, rainbow LED)
 ├── game_react.c/h     — Reaction Test (lives, shrinking window, hi-score)
