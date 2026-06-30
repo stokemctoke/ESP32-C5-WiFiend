@@ -801,6 +801,7 @@ void app_main(void) {
         if (ble_class_active)  { ble_class_tick();  neopixel_pulse(COLOR_BLUE); }
         if (ble_beacon_active) { ble_beacon_tick(); neopixel_pulse(COLOR_BLUE); }
         if (ble_hunt_active)     ble_hunt_tick();   // hunt drives its own LED (RSSI colour)
+        battery_tick();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

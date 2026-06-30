@@ -1,4 +1,5 @@
 #include "neopixel.h"
+#include "board/xiao_esp32c5.h"
 #include "led_strip.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -6,7 +7,7 @@
 
 static const char *TAG = "neopixel";
 
-#define NEOPIXEL_GPIO  GPIO_NUM_8
+#define NEOPIXEL_GPIO  PIN_NEOPIXEL
 #define NEOPIXEL_COUNT 1
 
 // Pulse parameters

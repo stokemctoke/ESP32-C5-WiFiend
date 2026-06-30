@@ -2,9 +2,14 @@
 [![My Website](https://img.shields.io/badge/Website-stokemctoke.com-FAA307)](https://stokemctoke.com)
 [![Platform: ESP32-C5](https://img.shields.io/badge/Platform-ESP32--C5-blue)](https://www.espressif.com/en/products/socs/esp32-c5)
 
-# ESP32-C5 WiFiend
+# WiFiend Xiao
 
 ![image](https://github.com/stokemctoke/ESP32-C5-WiFiend/blob/master/WiFiend_Github-Banner.png)
+
+> **WiFiend Xiao** — branch `wifiend-xiao`. Seeed XIAO ESP32-C5 perfboard handheld (OLED + encoder + NeoPixel + LiPo).  
+> **WiFiend Dev** — branch `wifiend-dev` (when ready). Bigger board: SD card, GPS, wardriving, extra GPIO.
+
+> **Agent / session handoff:** [.claude/PROJECT.md](.claude/PROJECT.md) — read before coding; update when decisions or roadmap change.
 
 > **⚠️ Active Development**
 > The WiFi feature set is functional and field-tested on the perfboard prototype. Polishing and transfer-method work in progress. Expect occasional breaking changes between commits. Not yet ready for general distribution.
@@ -23,7 +28,7 @@ Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame
 | Display | 0.96" SSD1306 OLED, 128×64, I2C (blue/yellow split) |
 | Input | EC11 rotary encoder — rotate to scroll, click to select, long-press to go back |
 | Status LED | WS2812B NeoPixel (×1) |
-| Power | 3.7V LiPo + TP4056 charger + slide switch *(v2 hardware)* |
+| Power | 3.7V LiPo on XIAO B+/B− pads (onboard SGM40567 charger) |
 
 ### Pin Configuration
 
@@ -35,6 +40,10 @@ Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame
 | NeoPixel | GPIO8 | RMT peripheral |
 | OLED SDA | GPIO23 | I2C, 400kHz |
 | OLED SCL | GPIO24 | I2C, 400kHz |
+| LiPo sense | GPIO6 | Onboard XIAO divider (ADC1 ch5); enable GPIO26 |
+| LiPo enable | GPIO26 | Drive HIGH during ADC sample (auto in firmware) |
+
+Pin map lives in [`main/board/xiao_esp32c5.h`](main/board/xiao_esp32c5.h).
 
 ---
 
@@ -101,7 +110,7 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [x] SSD1306 OLED driver — dirty-page framebuffer, new I2C master API
 - [x] OLED header layout — yellow zone: title + power indicator + contextual status; blue zone: content
 - [x] WS2812B NeoPixel — led_strip v3 RMT driver, brightness control, hardware wired on perfboard
-- [x] Battery ADC — firmware only (GPIO4, oneshot API, LiPo voltage → percentage); hardware on v2
+- [x] Battery ADC — XIAO onboard GPIO6/26 sense, LiPo charge curve (from WiFuxx), % on OLED + WebUI
 - [x] Menu system — 4-level stack, wrap-around navigation, header-aware rendering
 - [x] EC11 rotary encoder — PCNT quadrature decoding, 10µs glitch filter, polled SW with 20ms debounce
 - [x] Boot splash — custom WiFiend graphic, fullscreen bitmap on boot
@@ -110,11 +119,11 @@ idf.py -p /dev/ttyACM0 flash monitor
 
 **WiFi Reconnaissance**
 - [x] **WiFi Scanner** — full active scan across all channels; animated spinner during scan; results sorted by RSSI; scrollable list showing SSID (hidden networks labelled), RSSI, auth mode; encoder-driven scroll with position indicator; AP detail screen: full SSID, BSSID (OUI/NIC split), band (2.4/5GHz), channel, RSSI, auth mode, pairwise cipher, PHY modes (b/g/n/ax), WPS flag
-- [x] **Client Sniffer** — promiscuous mode 802.11 frame sniffing; auto channel-hops 2.4GHz 1–13 (500ms dwell); captures clients from probe requests, association frames, and data frames (ToDS); scrollable client list showing last 3 MAC bytes, RSSI, associated (A) or probe-only (P); detail screen: full client MAC, RSSI, channel, frame count, associated AP BSSID
+- [x] **Client Sniffer** — promiscuous mode 802.11 frame sniffing; auto channel-hops 2.4 GHz (ch 1–13) and 5 GHz (36–165, 400/300 ms dwell); captures clients from probe requests, association frames, and data frames (ToDS); scrollable client list showing last 3 MAC bytes, RSSI, associated (A) or probe-only (P); detail screen: full client MAC, RSSI, channel, frame count, associated AP BSSID
 - [x] **Channel Chart** — 2.4GHz channel occupancy bar chart showing AP density per channel
 
 **WiFi Attack**
-- [x] **Deauth Attack** — AP picker from last scan results; broadcast deauth frame injection via patched libnet80211 + esp_wifi_80211_tx; live stats screen showing target SSID/BSSID, channel, frames sent, pps rate, elapsed time; long-press to stop
+- [x] **Deauth Attack** — AP picker from last scan; WiFuxx-style deauth engine (`deauth_engine.c`) with rolling sequence numbers, multi-reason codes, channel hopping, and dual-band burst rates (~2500 pps target); live stats (SSID/BSSID, channel, frames sent, pps, elapsed); long-press to stop
 - [x] **AP Mode (Evil Twin) + Captive Portal** — SSID picker clones any nearby AP; open network on same channel; auto-scans if no results; live client screen shows IP, channel, connected MACs with [NEW] tag and age. DNS hijacker on UDP/53 resolves all hostnames to the device. HTTP server serves a polished login page mimicking iOS/Android system captive portals. Submitted passwords are captured, logged to serial, and displayed prominently on the OLED. Long-press stops AP and restores STA mode.
 - [x] **STA Connect** — connect to a scanned AP using a stored or entered passphrase; live status with IP, RSSI, gateway
 
@@ -161,7 +170,7 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [ ] GATT name lookup — read Device Name (0x2A00) to label currently-unnamed devices
 - [ ] BLE HID injector ("BadBLE") — present as a BLE keyboard, deliver a stored payload to a paired host
 - [ ] BLE UART (NUS) phone-link — Nordic UART Service for capture transfer + remote control
-- [ ] Advertisement Logger — passive capture of adv packets to LittleFS (BLE wardriving)
+- [ ] Advertisement Logger — passive capture of adv packets to LittleFS
 - [ ] BLE Spam / Custom Beacon Broadcaster — Apple/Google/Samsung pop-up flood, iBeacon/Eddystone broadcast
 
 **Storage**
@@ -169,22 +178,27 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [ ] BLE file transfer — pairs with the BLE UART (NUS) work above
 
 **WebUI**
+- [ ] **OTA firmware update** — upload a new `.bin` from the phone/browser while connected to `WiFiend-Remote`; progress bar + reboot on success. Requires partition table change (dual OTA slots) so updates are safe if upload fails; System tab in WebUI
 - [ ] BLE Devices tab — live BLE scan results in the dashboard browser, with classifier labels
 - [ ] Font-match the WebUI to stokemctoke.com
 
 **WiFi polish**
-- [ ] WiFi Client Sniffer 5GHz — extend channel hop table to include 5GHz channels
 - [ ] PMKID / Handshake first-render lag (same family as the sniffer fix)
 
 **Hardware**
 - [ ] Battery power system — TP4056 charger, slide switch, LiPo (v2 hardware build)
 - [ ] RC filter — 100Ω + 10–100nF ceramic caps on encoder CLK/DT (v2 hardware)
 
-### Future Ideas
+### Future Ideas (WiFiend Xiao)
+
 - [ ] 3D printed enclosure
-- [ ] PCB layout for v3 (will add SD card via SPI + GPS UART, freeing flash for app code)
-- [ ] Wardriving mode — pair with phone over BLE for GPS coords; log SSID/BSSID/RSSI/channel/auth/GPS to LittleFS
-- [ ] Multi-screen dashboard — TCA9548A I2C mux driving up to 8 × SSD1306 OLEDs simultaneously. Each screen showing a different data view: 2.4GHz channel chart, 5GHz channel chart, AP list, deauth status, device stats. ~5 full refreshes/sec across all screens at 400kHz I2C. 8KB framebuffer total — trivial on C5. Would set this apart from every other WiFi tool out there.
+- [ ] RC filter / PCB polish on current XIAO build
+
+### WiFiend Dev (branch `wifiend-dev` — not started)
+
+- [ ] ESP32-C5-DevKitC-1 or custom PCB with SD card (SPI), GPS (UART), extra GPIO
+- [ ] Wardriving — GPS + SSID/BSSID/RSSI/channel/auth logging at drive scale
+- [ ] Multi-screen dashboard — TCA9548A I2C mux + multiple SSD1306 OLEDs
 
 ---
 
@@ -194,6 +208,7 @@ idf.py -p /dev/ttyACM0 flash monitor
 main/
 ├── main.c             — boot sequence, encoder event handler, menu callbacks,
 │                        LittleFS mount, mode dispatch
+├── board/xiao_esp32c5.h — locked XIAO pin map (WiFiend Xiao)
 ├── ssd1306.c/h        — OLED driver (dirty-page framebuffer, I2C, header rendering)
 ├── encoder.c/h        — EC11 rotary encoder (PCNT quadrature, polled SW debounce)
 ├── buttons.c/h        — generic button input helpers
@@ -204,7 +219,8 @@ main/
 ├── wifi_sniffer.c/h   — promiscuous client sniffer, channel-hop
 ├── wifi_ap.c/h        — evil-twin AP mode (uses captive_portal for HTTP/DNS)
 ├── wifi_sta.c/h       — STA connect
-├── wifi_attack.c/h    — deauth engine
+├── deauth_engine.c/h  — shared 802.11 deauth TX core (WiFuxx attack loop)
+├── wifi_attack.c/h    — deauth UI (picker + stats)
 ├── wifi_pmkid.c/h     — PMKID capture (auth/assoc forge → EAPOL M1 → RSN IE PMKID)
 ├── wifi_handshake.c/h — WPA 4-way handshake capture (M1+M2 pairing, optional deauth)
 ├── wifi_captures.c/h  — on-device viewer + per-entry detail sheet + serial dump

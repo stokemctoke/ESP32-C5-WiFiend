@@ -1,4 +1,5 @@
 #include "ssd1306.h"
+#include "board/xiao_esp32c5.h"
 #include "battery.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
@@ -10,9 +11,9 @@
 static const char *TAG = "ssd1306";
 
 #define I2C_MASTER_NUM I2C_NUM_0
-#define I2C_MASTER_SDA_IO 23
-#define I2C_MASTER_SCL_IO 24
-#define I2C_MASTER_FREQ_HZ 400000
+#define I2C_MASTER_SDA_IO PIN_OLED_SDA
+#define I2C_MASTER_SCL_IO PIN_OLED_SCL
+#define I2C_MASTER_FREQ_HZ PIN_OLED_I2C_HZ
 #define OLED_ADDR 0x3C
 
 static uint8_t fb[8][128];

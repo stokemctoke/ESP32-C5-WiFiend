@@ -31,10 +31,16 @@ typedef struct {
 #define SUBTYPE_ASSOC_REQ   0
 #define SUBTYPE_REASSOC_REQ 2
 
-// 2.4 GHz channels — hop through all of them
-static const uint8_t hop_channels[] = {1,2,3,4,5,6,7,8,9,10,11,12,13};
-#define HOP_COUNT  (sizeof(hop_channels) / sizeof(hop_channels[0]))
-#define HOP_DWELL_MS  500
+// 2.4 GHz + 5 GHz — hop through all supported channels (dual-band scan)
+static const uint8_t hop_channels[] = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+    36, 40, 44, 48, 52, 56, 60, 64,
+    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140,
+    149, 153, 157, 161, 165,
+};
+#define HOP_COUNT     (sizeof(hop_channels) / sizeof(hop_channels[0]))
+#define HOP_DWELL_24  400
+#define HOP_DWELL_5   300
 
 static wifi_client_t clients[MAX_SNIFF_CLIENTS];
 static uint16_t      client_count   = 0;
@@ -132,7 +138,8 @@ static void hop_task(void *arg) {
         current_chan = hop_channels[hop_idx];
         esp_wifi_set_channel(current_chan, WIFI_SECOND_CHAN_NONE);
         hop_idx = (hop_idx + 1) % HOP_COUNT;
-        vTaskDelay(pdMS_TO_TICKS(HOP_DWELL_MS));
+        uint16_t dwell = (current_chan <= 14) ? HOP_DWELL_24 : HOP_DWELL_5;
+        vTaskDelay(pdMS_TO_TICKS(dwell));
     }
     vTaskDelete(NULL);
 }
@@ -162,8 +169,8 @@ void wifi_sniff_start(void) {
 
 void wifi_sniff_stop(void) {
     sniff_running = false;
-    // hop_task will exit on its own next iteration; give it time
-    vTaskDelay(pdMS_TO_TICKS(HOP_DWELL_MS + 100));
+    // hop_task exits on its own; allow one full dwell period
+    vTaskDelay(pdMS_TO_TICKS(HOP_DWELL_24 + 100));
     hop_task_h = NULL;
 
     esp_wifi_set_promiscuous(false);
@@ -206,8 +213,9 @@ void wifi_sniff_render(void) {
     uint16_t count = client_count;
 
     char status[20];
-    snprintf(status, sizeof(status), "Ch:%2u  %3u cli",
-             current_chan, count);
+    const char *band = (current_chan > 14) ? "5G" : "2G";
+    snprintf(status, sizeof(status), "Ch:%3u %s %2u",
+             current_chan, band, count);
     ssd1306_clear_buffer();
     ssd1306_draw_header("Client Sniff", status);
 

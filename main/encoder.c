@@ -1,4 +1,5 @@
 #include "encoder.h"
+#include "board/xiao_esp32c5.h"
 #include "driver/pulse_cnt.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -7,9 +8,9 @@
 
 static const char *TAG = "encoder";
 
-#define GPIO_CLK            GPIO_NUM_9
-#define GPIO_DT             GPIO_NUM_10
-#define GPIO_SW             GPIO_NUM_7
+#define GPIO_CLK            PIN_ENCODER_CLK
+#define GPIO_DT             PIN_ENCODER_DT
+#define GPIO_SW             PIN_ENCODER_SW
 #define LONG_PRESS_MS       500
 #define DEBOUNCE_MS         20
 #define PCNT_HIGH_LIMIT     100
