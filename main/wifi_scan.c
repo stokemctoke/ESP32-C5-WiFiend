@@ -1,4 +1,5 @@
 #include "wifi_scan.h"
+#include "oui_lookup.h"
 #include "ssd1306.h"
 #include "neopixel.h"
 #include "esp_wifi.h"
@@ -224,9 +225,14 @@ void wifi_scan_render_detail(void) {
              ap->channel > 14 ? "5GHz" : "2.4G", ap->channel);
     ssd1306_draw_string(0, 2, row);
 
-    // BSSID — OUI (manufacturer bytes) and NIC (device bytes)
-    snprintf(row, sizeof(row), "OUI:%02X:%02X:%02X",
-             ap->bssid[0], ap->bssid[1], ap->bssid[2]);
+    // BSSID — vendor from OUI lookup, else hex OUI bytes
+    const char *vendor = oui_lookup(ap->bssid);
+    if (vendor) {
+        snprintf(row, sizeof(row), "%.16s", vendor);
+    } else {
+        snprintf(row, sizeof(row), "OUI:%02X:%02X:%02X",
+                 ap->bssid[0], ap->bssid[1], ap->bssid[2]);
+    }
     ssd1306_draw_string(0, 3, row);
     snprintf(row, sizeof(row), "NIC:%02X:%02X:%02X",
              ap->bssid[3], ap->bssid[4], ap->bssid[5]);

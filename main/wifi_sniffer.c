@@ -1,4 +1,5 @@
 #include "wifi_sniffer.h"
+#include "oui_lookup.h"
 #include "ssd1306.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
@@ -260,8 +261,13 @@ void wifi_sniff_render_detail(void) {
     snprintf(line, sizeof(line), "%02X:%02X:%02X",
              c.mac[0], c.mac[1], c.mac[2]);
     ssd1306_draw_string(0, 0, line);
-    snprintf(line, sizeof(line), "%02X:%02X:%02X LN>bk",
-             c.mac[3], c.mac[4], c.mac[5]);
+    const char *vendor = oui_lookup(c.mac);
+    if (vendor) {
+        snprintf(line, sizeof(line), "%.12s LN>bk", vendor);
+    } else {
+        snprintf(line, sizeof(line), "%02X:%02X:%02X LN>bk",
+                 c.mac[3], c.mac[4], c.mac[5]);
+    }
     ssd1306_draw_string(0, 1, line);
 
     // Blue zone

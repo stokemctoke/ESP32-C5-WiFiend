@@ -22,25 +22,25 @@ Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame
 
 ## Hardware
 
-| Part | Detail |
-|------|--------|
-| MCU | Seeed Studio XIAO ESP32-C5 |
-| Display | 0.96" SSD1306 OLED, 128×64, I2C (blue/yellow split) |
-| Input | EC11 rotary encoder — rotate to scroll, click to select, long-press to go back |
-| Status LED | WS2812B NeoPixel (×1) |
-| Power | 3.7V LiPo on XIAO B+/B− pads (onboard SGM40567 charger) |
+| Part       | Detail                                                                         |
+| ---------- | ------------------------------------------------------------------------------ |
+| MCU        | Seeed Studio XIAO ESP32-C5                                                     |
+| Display    | 0.96" SSD1306 OLED, 128×64, I2C (blue/yellow split)                            |
+| Input      | EC11 rotary encoder — rotate to scroll, click to select, long-press to go back |
+| Status LED | WS2812B NeoPixel (×1)                                                          |
+| Power      | 3.7V LiPo on XIAO B+/B− pads (onboard SGM40567 charger)                        |
 
 ### Pin Configuration
 
-| Function | GPIO | Notes |
-|----------|------|-------|
-| Encoder CLK | GPIO9 | RC filtered (100Ω + 10–100nF ceramic) |
-| Encoder DT | GPIO10 | RC filtered (100Ω + 10–100nF ceramic) |
-| Encoder SW | GPIO7 | Pull-up input |
-| NeoPixel | GPIO8 | RMT peripheral |
-| OLED SDA | GPIO23 | I2C, 400kHz |
-| OLED SCL | GPIO24 | I2C, 400kHz |
-| LiPo sense | GPIO6 | Onboard XIAO divider (ADC1 ch5); enable GPIO26 |
+| Function    | GPIO   | Notes                                           |
+| ----------- | ------ | ----------------------------------------------- |
+| Encoder CLK | GPIO9  | RC filtered (100Ω + 10–100nF ceramic)           |
+| Encoder DT  | GPIO10 | RC filtered (100Ω + 10–100nF ceramic)           |
+| Encoder SW  | GPIO7  | Pull-up input                                   |
+| NeoPixel    | GPIO8  | RMT peripheral                                  |
+| OLED SDA    | GPIO23 | I2C, 400kHz                                     |
+| OLED SCL    | GPIO24 | I2C, 400kHz                                     |
+| LiPo sense  | GPIO6  | Onboard XIAO divider (ADC1 ch5); enable GPIO26  |
 | LiPo enable | GPIO26 | Drive HIGH during ADC sample (auto in firmware) |
 
 Pin map lives in [`main/board/xiao_esp32c5.h`](main/board/xiao_esp32c5.h).
@@ -49,12 +49,12 @@ Pin map lives in [`main/board/xiao_esp32c5.h`](main/board/xiao_esp32c5.h).
 
 ## Interaction
 
-| Action | Result |
-|--------|--------|
-| Rotate CW | Scroll down |
-| Rotate CCW | Scroll up |
-| Click (< 500ms) | Select |
-| Long press (≥ 500ms) | Go back |
+| Action               | Result      |
+| -------------------- | ----------- |
+| Rotate CW            | Scroll down |
+| Rotate CCW           | Scroll up   |
+| Click (< 500ms)      | Select      |
+| Long press (≥ 500ms) | Go back     |
 
 ---
 
@@ -106,6 +106,7 @@ idf.py -p /dev/ttyACM0 flash monitor
 ### Done
 
 **Platform / Hardware**
+
 - [x] Project scaffold — ESP-IDF v5.5.1, ESP32-C5 target, patched libnet80211.a wired in
 - [x] SSD1306 OLED driver — dirty-page framebuffer, new I2C master API
 - [x] OLED header layout — yellow zone: title + power indicator + contextual status; blue zone: content
@@ -118,76 +119,82 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [x] **8MB flash + LittleFS** — custom partition table (3MB factory app + 4.9MB LittleFS storage). Capture logs persist across power cycles.
 
 **WiFi Reconnaissance**
+
 - [x] **WiFi Scanner** — full active scan across all channels; animated spinner during scan; results sorted by RSSI; scrollable list showing SSID (hidden networks labelled), RSSI, auth mode; encoder-driven scroll with position indicator; AP detail screen: full SSID, BSSID (OUI/NIC split), band (2.4/5GHz), channel, RSSI, auth mode, pairwise cipher, PHY modes (b/g/n/ax), WPS flag
 - [x] **Client Sniffer** — promiscuous mode 802.11 frame sniffing; auto channel-hops 2.4 GHz (ch 1–13) and 5 GHz (36–165, 400/300 ms dwell); captures clients from probe requests, association frames, and data frames (ToDS); scrollable client list showing last 3 MAC bytes, RSSI, associated (A) or probe-only (P); detail screen: full client MAC, RSSI, channel, frame count, associated AP BSSID
 - [x] **Channel Chart** — 2.4GHz channel occupancy bar chart showing AP density per channel
 
 **WiFi Attack**
+
 - [x] **Deauth Attack** — AP picker from last scan; WiFuxx-style deauth engine (`deauth_engine.c`) with rolling sequence numbers, multi-reason codes, channel hopping, and dual-band burst rates (~2500 pps target); live stats (SSID/BSSID, channel, frames sent, pps, elapsed); long-press to stop
 - [x] **AP Mode (Evil Twin) + Captive Portal** — SSID picker clones any nearby AP; open network on same channel; auto-scans if no results; live client screen shows IP, channel, connected MACs with [NEW] tag and age. DNS hijacker on UDP/53 resolves all hostnames to the device. HTTP server serves a polished login page mimicking iOS/Android system captive portals. Submitted passwords are captured, logged to serial, and displayed prominently on the OLED. Long-press stops AP and restores STA mode.
 - [x] **STA Connect** — connect to a scanned AP using a stored or entered passphrase; live status with IP, RSSI, gateway
 
 **WiFi Cracking Captures**
+
 - [x] **PMKID Capture** — forged auth + association request elicits EAPOL M1 from the target AP; RSN IE PMKID extraction; result saved as a hashcat-22000 line (`WPA*02*…`) to `/lfs/pmkid.log`; 30-attempt task with live progress; deduplicated by PMKID hash
 - [x] **WPA Handshake Capture** — passive listen for EAPOL M1+M2 between real clients and a target AP; pairs by replay counter; reconstructs the M2 EAPOL frame with MIC zeroed; saves a hashcat-22000 line (`WPA*02*MIC*…*ANONCE*EAPOL*MP`) to `/lfs/handshakes.log`. CLICK during hunting fires a 48-frame deauth burst (alternating broadcast + targeted) to force re-authentication. Header shows live `M1:x M2:y` counters.
 - [x] **Captures Menu** — on-device viewer for all saved PMKID and handshake captures; parses each hashcat line for SSID + BSSID + client MAC. Per-entry detail sheet with **Dump to Serial** (single capture's hashcat line via USB-Serial-JTAG CDC, ready to paste into hashcat) and **Delete this** (rewrites log in place). Bulk actions: **Dump All Serial** and **Clear All** (with confirmation).
 
 **Remote WebUI**
+
 - [x] **Remote WebUI dashboard** — dedicated `WiFiend-Remote` soft-AP serves a phone-friendly single-page web app (WebSocket-driven) at 192.168.4.1. Branded to match stokemctoke.com colours, with a live activity-log panel showing exactly what the device is doing. Tabs: **Scan** (run/browse APs on a real screen), **Capture** (PMKID/Handshake hunts + view/download saved `.hc22000` files straight to the phone), **Tools** (client sniffer, STA connect), **System** (device info, downloads, exit). Active radio-commandeering attacks (deauth, clone AP) are intentionally device-only — they take over the single radio and would drop the web link — so the dashboard stays reliable.
 
 **Games**
+
 - [x] **Pong** — encoder-controlled paddle vs. a CPU that ramps from clumsy to ruthless; score = win streak, with the CPU starting tougher each win. Ball speeds up over a round; play field kept in the blue zone.
 - [x] **Conway's Game of Life** — 64×32 toroidal grid; encoder-dialled deterministic seed (digit-by-digit entry); self-reseeds if the colony dies; NeoPixel rainbow cycle while running.
 - [x] **Reaction Test** — NeoPixel flashes a colour; match the shuffled colour-word and click within the level window. 3 lives, window tightens 0.1s per level; faster = more points.
 - [x] **Persistent hi-scores** — shared NVS-backed top-10 table (arcade 3-letter names, scrollable) for Pong and Reaction; survives reboots and reflashes.
 
 **Bluetooth (BLE — Phase 1: read-only recon)**
-- [x] **BLE Scanner** — NimBLE observer-mode active GAP discovery; deduped result table sorted by RSSI; per-AP detail with MAC, address type (public/random), connectable flag, vendor company ID, advertised 16-bit service UUID, appearance, and the classified device type
-- [x] **Device Classifier** — same scan, list annotated with a type label derived from company ID + service UUIDs + appearance (e.g. Phone / Wearable / iBeacon / Fast Pair / Apple / Microsoft / Google)
-- [x] **Beacons** — filtered iBeacon + Eddystone view with full payload decode (UUID/major/minor/TxPower for iBeacon; URL/UID/TLM for Eddystone, including the scheme/suffix expansion)
-- [x] **Device Hunter** — RSSI proximity locator; pick a device, then a live-updating bar + peak marker, and the NeoPixel ramps red → orange → yellow → green by signal strength
-- [x] **Wi-Fi / BLE coexistence** — NimBLE runs concurrently with the active Wi-Fi STA; SW coexistence enabled in `sdkconfig`. The Bluetooth submenu adds ~340 KB to the app image, well inside the 3 MB factory partition
+
+- [x] **BLE Scanner** — NimBLE observer-mode active GAP discovery; deduped result table sorted by RSSI; per-device detail with MAC, address type, company name, Continuity label, raw adv hex
+- [x] **Device Classifier** — type labels from company ID + service UUIDs + appearance + Apple Continuity
+- [x] **Beacons** — filtered iBeacon + Eddystone view with full payload decode
+- [x] **Device Hunter** — RSSI proximity locator with NeoPixel ramp
+- [x] **Wi-Fi / BLE coexistence** — NimBLE concurrent with Wi-Fi STA
+
+**Bluetooth (BLE — Phase 2: active)**
+
+- [x] **GATT Explorer** — connect, enumerate services + characteristics
+- [x] **Notify Monitor** — subscribe to first notifiable characteristic, live hex
+- [x] **BLE Spam / Beacon TX** — Apple Continuity, Fast Pair, iBeacon, Eddystone-URL
+- [x] **BadBLE HID** — minimal keyboard peripheral with NVS payload
+- [x] **Advertisement Logger** — `/lfs/ble.log` with rotation
+- [x] **NUS Link** — DUMP / STAT over Nordic UART Service
+
+**WiFi Monitor / RF**
+
+- [x] **WiFi Monitor** — Beacons / Probes / EAPOL counters / channel activity (LittleFS logs; no GPS wardriving)
+- [x] **ESP-NOW Recon** — peer discovery list
+- [x] **802.15.4 Sniff** — frame-type / PAN counters (WiFi stopped while active)
+
+**Platform**
+
+- [x] **`radio_mgr`** — exclusive radio-mode arbitration
+- [x] **OUI vendor lookup** — WiFi scan + sniffer detail
+- [x] **LittleFS file explorer** — Settings → list / dump / delete
+- [x] **Settings screen** — LED brightness, hop dwell, legal ack, burst sizes (NVS)
+- [x] **Serial CLI** — `wifiend>` on UART0 (scan, battery, heap, mode, ls, cat, deauth stop)
+- [x] **WebUI OTA** — dual 2 MB OTA partitions; System tab upload + progress
+- [x] **WebUI BLE tab** — live BLE device list from phone browser
+- [x] **PMKID / Handshake render refresh** — main-loop redraw while active
 
 **Polish**
-- [x] **Smooth NeoPixel breathing** — dedicated 40 Hz `esp_timer` drives a cubic-gamma triangle wave with a higher internal peak (independent of ambient brightness) so the active-scan LED animation looks fluid instead of stepped
-- [x] **Client Sniffer auto-refresh** — main loop now re-renders the sniffer while active; clients appear without needing an encoder twist
+
+- [x] **Smooth NeoPixel breathing**
+- [x] **Client Sniffer auto-refresh** + dual-band hop
 
 **Other**
-- [x] **Device Info** — stateful screen showing MAC, free heap, flash size, chip revision, IDF version, uptime, WiFi mode
 
-### Upcoming
+- [x] **Device Info**
 
-**BLE Phase 1.5 — recon polish**
-- [ ] Expanded company-name table (more vendors decoded from the manufacturer ID we already capture)
-- [ ] Apple Continuity decode — label AirDrop / Handoff / Nearby-Action / AirPods etc. from the message-type byte in Apple's mfg data
-- [ ] MAC OUI vendor lookup for public addresses
-- [ ] Raw advertisement hex dump in the detail screen
-- [ ] BLE scan list sort-by-RSSI option
+### Upcoming / polish leftovers
 
-**BLE Phase 2 — active / connection-based**
-- [ ] GATT Explorer — connect, enumerate services + characteristics, read values
-- [ ] Notify Monitor — connect + subscribe to a characteristic, show live values
-- [ ] GATT name lookup — read Device Name (0x2A00) to label currently-unnamed devices
-- [ ] BLE HID injector ("BadBLE") — present as a BLE keyboard, deliver a stored payload to a paired host
-- [ ] BLE UART (NUS) phone-link — Nordic UART Service for capture transfer + remote control
-- [ ] Advertisement Logger — passive capture of adv packets to LittleFS
-- [ ] BLE Spam / Custom Beacon Broadcaster — Apple/Google/Samsung pop-up flood, iBeacon/Eddystone broadcast
-
-**Storage**
-- [ ] LittleFS file explorer — Settings entry to list `/lfs/*`, see sizes, delete or dump-to-serial. Useful for clearing handshake / PMKID captures
-- [ ] BLE file transfer — pairs with the BLE UART (NUS) work above
-
-**WebUI**
-- [ ] **OTA firmware update** — upload a new `.bin` from the phone/browser while connected to `WiFiend-Remote`; progress bar + reboot on success. Requires partition table change (dual OTA slots) so updates are safe if upload fails; System tab in WebUI
-- [ ] BLE Devices tab — live BLE scan results in the dashboard browser, with classifier labels
 - [ ] Font-match the WebUI to stokemctoke.com
-
-**WiFi polish**
-- [ ] PMKID / Handshake first-render lag (same family as the sniffer fix)
-
-**Hardware**
-- [ ] Battery power system — TP4056 charger, slide switch, LiPo (v2 hardware build)
-- [ ] RC filter — 100Ω + 10–100nF ceramic caps on encoder CLK/DT (v2 hardware)
+- [ ] GATT Device Name (0x2A00) resolver for unnamed BLE devices
+- [ ] WiFi STA profile picker UI (NVS API exists)
 
 ### Future Ideas (WiFiend Xiao)
 
@@ -241,7 +248,7 @@ main/
 └── boot_bitmap.h      — splash screen bitmap
 patched_libnet/
 └── libnet80211.a      — patched WiFi lib for raw frame TX (deauth + assoc forge)
-partitions.csv         — custom 8MB layout: 3MB factory + 4.9MB LittleFS storage
+partitions.csv         — 8MB OTA layout: 2×2MB ota_0/ota_1 + ~3.875MB LittleFS
 ```
 
 ---

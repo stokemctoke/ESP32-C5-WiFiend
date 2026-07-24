@@ -63,6 +63,8 @@ static const char CONNECTING_HTML[] =
 
 static cp_capture_t      captures[CP_MAX_CAPTURES];
 static uint8_t           capture_count = 0;
+static char              dns_log[CP_DNS_LOG_MAX][CP_DNS_HOST_MAX];
+static uint8_t           dns_log_count = 0;
 static SemaphoreHandle_t cap_mutex     = NULL;
 
 static char              target_ssid[33];
@@ -154,6 +156,58 @@ static esp_err_t redirect_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// ---------- DNS query name parser ----------
+
+static bool dns_parse_qname(const uint8_t *pkt, int len, char *host, size_t host_size) {
+    if (len < 13 || host_size < 2) return false;
+
+    size_t out = 0;
+    int pos = 12;
+
+    while (pos < len) {
+        uint8_t label_len = pkt[pos++];
+        if (label_len == 0) break;
+        if (label_len > 63 || pos + label_len > len) return false;
+
+        if (out > 0) {
+            if (out + 1 >= host_size) break;
+            host[out++] = '.';
+        }
+
+        for (uint8_t i = 0; i < label_len; i++) {
+            if (out + 1 >= host_size) {
+                host[out] = '\0';
+                return out > 0;
+            }
+            host[out++] = (char)pkt[pos + i];
+        }
+        pos += label_len;
+    }
+
+    host[out] = '\0';
+    return out > 0;
+}
+
+static void dns_log_push(const char *hostname) {
+    if (!hostname || !hostname[0]) return;
+
+    xSemaphoreTake(cap_mutex, portMAX_DELAY);
+
+    if (dns_log_count < CP_DNS_LOG_MAX) {
+        dns_log_count++;
+    } else {
+        memmove(&dns_log[0], &dns_log[1],
+                (CP_DNS_LOG_MAX - 1) * CP_DNS_HOST_MAX);
+    }
+
+    char *slot = dns_log[dns_log_count - 1];
+    strncpy(slot, hostname, CP_DNS_HOST_MAX - 1);
+    slot[CP_DNS_HOST_MAX - 1] = '\0';
+
+    xSemaphoreGive(cap_mutex);
+    ESP_LOGI(TAG, "DNS query: %s", slot);
+}
+
 // ---------- DNS hijacker (UDP/53, answer everything with 192.168.4.1) ----------
 
 static void dns_task(void *arg) {
@@ -196,8 +250,13 @@ static void dns_task(void *arg) {
         if (len + 16 > (int)sizeof(pkt)) continue;
 
         query_count++;
-        if (query_count <= 5 || (query_count % 20) == 0) {
-            ESP_LOGI(TAG, "DNS query #%lu len=%d", (unsigned long)query_count, len);
+
+        char hostname[CP_DNS_HOST_MAX];
+        if (dns_parse_qname(pkt, len, hostname, sizeof(hostname))) {
+            dns_log_push(hostname);
+        } else if (query_count <= 5 || (query_count % 20) == 0) {
+            ESP_LOGI(TAG, "DNS query #%lu len=%d (unparsed)",
+                     (unsigned long)query_count, len);
         }
 
         // Build response in-place:
@@ -239,7 +298,9 @@ void captive_portal_start(const char *ssid) {
 
     xSemaphoreTake(cap_mutex, portMAX_DELAY);
     capture_count = 0;
+    dns_log_count = 0;
     memset(captures, 0, sizeof(captures));
+    memset(dns_log, 0, sizeof(dns_log));
     xSemaphoreGive(cap_mutex);
 
     // Explicitly set the DHCP server to advertise 192.168.4.1 as DNS server
@@ -317,4 +378,25 @@ uint8_t captive_portal_get_count(void) {
 const cp_capture_t *captive_portal_get_latest(void) {
     if (capture_count == 0) return NULL;
     return &captures[capture_count - 1];
+}
+
+uint8_t captive_portal_get_dns_log_count(void) {
+    if (!cap_mutex) return 0;
+    xSemaphoreTake(cap_mutex, portMAX_DELAY);
+    uint8_t count = dns_log_count;
+    xSemaphoreGive(cap_mutex);
+    return count;
+}
+
+const char *captive_portal_get_dns_log(uint8_t idx) {
+    if (!cap_mutex) return NULL;
+    xSemaphoreTake(cap_mutex, portMAX_DELAY);
+    if (idx >= dns_log_count) {
+        xSemaphoreGive(cap_mutex);
+        return NULL;
+    }
+    uint8_t slot = dns_log_count - 1 - idx;
+    const char *host = dns_log[slot];
+    xSemaphoreGive(cap_mutex);
+    return host;
 }

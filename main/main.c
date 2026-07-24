@@ -37,11 +37,26 @@
 #include "ble_class.h"
 #include "ble_beacon.h"
 #include "ble_hunt.h"
+#include "ble_gatt.h"
+#include "ble_notify.h"
+#include "ble_spam.h"
+#include "ble_hid.h"
+#include "ble_advlog.h"
+#include "ble_nus.h"
+#include "radio_mgr.h"
+#include "wifi_monitor.h"
+#include "fs_browser.h"
+#include "settings.h"
+#include "espnow_recon.h"
+#include "ieee154_sniff.h"
+#include "wifi_profiles.h"
+#include "cli.h"
 
 static const char *TAG = "main";
 
 static volatile bool scanner_active  = false;
 static volatile bool sniffer_active  = false;
+static volatile bool monitor_active  = false;
 static volatile bool attack_active   = false;
 static volatile bool ap_active       = false;
 static volatile bool sta_active      = false;
@@ -58,6 +73,16 @@ static volatile bool ble_scan_active   = false;
 static volatile bool ble_class_active  = false;
 static volatile bool ble_beacon_active = false;
 static volatile bool ble_hunt_active   = false;
+static volatile bool ble_gatt_active   = false;
+static volatile bool ble_notify_active = false;
+static volatile bool ble_spam_active   = false;
+static volatile bool ble_hid_active    = false;
+static volatile bool ble_advlog_active = false;
+static volatile bool ble_nus_active    = false;
+static volatile bool fs_browser_active = false;
+static volatile bool settings_ui_active = false;
+static volatile bool espnow_active     = false;
+static volatile bool ieee154_active    = false;
 
 // Forward declarations for mutual callback references
 static void encoder_event_handler(encoder_event_t event);
@@ -80,6 +105,17 @@ static void ble_scan_encoder_handler(encoder_event_t event);
 static void ble_class_encoder_handler(encoder_event_t event);
 static void ble_beacon_encoder_handler(encoder_event_t event);
 static void ble_hunt_encoder_handler(encoder_event_t event);
+static void ble_gatt_encoder_handler(encoder_event_t event);
+static void ble_notify_encoder_handler(encoder_event_t event);
+static void ble_spam_encoder_handler(encoder_event_t event);
+static void ble_hid_encoder_handler(encoder_event_t event);
+static void ble_advlog_encoder_handler(encoder_event_t event);
+static void ble_nus_encoder_handler(encoder_event_t event);
+static void monitor_encoder_handler(encoder_event_t event);
+static void fs_browser_encoder_handler(encoder_event_t event);
+static void settings_ui_encoder_handler(encoder_event_t event);
+static void espnow_encoder_handler(encoder_event_t event);
+static void ieee154_encoder_handler(encoder_event_t event);
 
 static void detail_encoder_handler(encoder_event_t event) {
     if (event == ENCODER_LONG_PRESS) {
@@ -119,6 +155,7 @@ static void scanner_encoder_handler(encoder_event_t event) {
 static void sniffer_detail_encoder_handler(encoder_event_t event) {
     if (event == ENCODER_LONG_PRESS) {
         wifi_sniff_stop();
+        radio_mgr_leave(RADIO_MODE_WIFI_SNIFF);
         sniffer_active = false;
         encoder_set_callback(encoder_event_handler);
         neopixel_set_color(COLOR_GREEN);
@@ -145,6 +182,7 @@ static void sniffer_encoder_handler(encoder_event_t event) {
             break;
         case ENCODER_LONG_PRESS:
             wifi_sniff_stop();
+            radio_mgr_leave(RADIO_MODE_WIFI_SNIFF);
             sniffer_active = false;
             encoder_set_callback(encoder_event_handler);
             neopixel_set_color(COLOR_GREEN);
@@ -157,8 +195,43 @@ static void menu_wifi_sniffer(void) {
     neopixel_set_color(COLOR_MAGENTA);
     sniffer_active = true;
     encoder_set_callback(sniffer_encoder_handler);
+    radio_mgr_enter(RADIO_MODE_WIFI_SNIFF);
     wifi_sniff_start();
     wifi_sniff_render();
+}
+
+static void monitor_encoder_handler(encoder_event_t event) {
+    switch (event) {
+        case ENCODER_CW:
+            wifi_monitor_scroll_down();
+            wifi_monitor_render();
+            break;
+        case ENCODER_CCW:
+            wifi_monitor_scroll_up();
+            wifi_monitor_render();
+            break;
+        case ENCODER_CLICK:
+            wifi_monitor_select();
+            wifi_monitor_render();
+            break;
+        case ENCODER_LONG_PRESS:
+            wifi_monitor_stop();
+            radio_mgr_leave(RADIO_MODE_WIFI_MONITOR);
+            monitor_active = false;
+            encoder_set_callback(encoder_event_handler);
+            neopixel_set_color(COLOR_GREEN);
+            menu_render();
+            break;
+    }
+}
+
+static void menu_wifi_monitor(void) {
+    neopixel_set_color(COLOR_CYAN);
+    monitor_active = true;
+    encoder_set_callback(monitor_encoder_handler);
+    wifi_monitor_enter();
+    wifi_monitor_start();
+    wifi_monitor_render();
 }
 
 static void menu_wifi_scanner(void) {
@@ -217,17 +290,25 @@ static void attack_encoder_handler(encoder_event_t event) {
             break;
         case ENCODER_CLICK:
             if (!wifi_attack_is_running()) {
-                wifi_attack_select();   // confirm AP and start attack
-                neopixel_set_color(COLOR_RED);
+                wifi_attack_cycle_profile();
             }
             wifi_attack_render();
             break;
         case ENCODER_LONG_PRESS:
-            wifi_attack_stop();
-            attack_active = false;
-            encoder_set_callback(encoder_event_handler);
-            neopixel_set_color(COLOR_GREEN);
-            menu_render();
+            if (wifi_attack_is_running()) {
+                wifi_attack_stop();
+            } else {
+                wifi_attack_start();
+                neopixel_set_color(COLOR_RED);
+            }
+            if (!wifi_attack_is_running()) {
+                attack_active = false;
+                encoder_set_callback(encoder_event_handler);
+                neopixel_set_color(COLOR_GREEN);
+                menu_render();
+                break;
+            }
+            wifi_attack_render();
             break;
     }
 }
@@ -585,6 +666,120 @@ static void menu_ble_hunt(void) {
     ble_hunt_enter();
 }
 
+static void ble_gatt_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        ble_gatt_exit();
+        ble_gatt_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        ble_gatt_input(event);
+    }
+}
+static void menu_ble_gatt(void) {
+    ble_gatt_active = true;
+    neopixel_set_color(COLOR_BLUE);
+    encoder_set_callback(ble_gatt_encoder_handler);
+    ble_core_init();
+    ble_gatt_enter();
+}
+
+static void ble_notify_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        ble_notify_exit();
+        ble_notify_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        ble_notify_input(event);
+    }
+}
+static void menu_ble_notify(void) {
+    ble_notify_active = true;
+    neopixel_set_color(COLOR_BLUE);
+    encoder_set_callback(ble_notify_encoder_handler);
+    ble_core_init();
+    ble_notify_enter();
+}
+
+static void ble_spam_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        ble_spam_exit();
+        ble_spam_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        ble_spam_input(event);
+    }
+}
+static void menu_ble_spam(void) {
+    ble_spam_active = true;
+    neopixel_set_color(COLOR_MAGENTA);
+    encoder_set_callback(ble_spam_encoder_handler);
+    ble_core_init();
+    ble_spam_enter();
+}
+
+static void ble_hid_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        ble_hid_exit();
+        ble_hid_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        ble_hid_input(event);
+    }
+}
+static void menu_ble_hid(void) {
+    ble_hid_active = true;
+    neopixel_set_color(COLOR_CYAN);
+    encoder_set_callback(ble_hid_encoder_handler);
+    ble_core_init();
+    ble_hid_enter();
+}
+
+static void ble_advlog_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        ble_advlog_exit();
+        ble_advlog_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        ble_advlog_input(event);
+    }
+}
+static void menu_ble_advlog(void) {
+    ble_advlog_active = true;
+    neopixel_set_color(COLOR_BLUE);
+    encoder_set_callback(ble_advlog_encoder_handler);
+    ble_core_init();
+    ble_advlog_enter();
+}
+
+static void ble_nus_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        ble_nus_exit();
+        ble_nus_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        ble_nus_input(event);
+    }
+}
+static void menu_ble_nus(void) {
+    ble_nus_active = true;
+    neopixel_set_color(COLOR_CYAN);
+    encoder_set_callback(ble_nus_encoder_handler);
+    ble_core_init();
+    ble_nus_enter();
+}
+
 static void info_render(void) {
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -666,9 +861,131 @@ static void menu_device_info(void) {
     info_render();
 }
 
+static void fs_browser_encoder_handler(encoder_event_t event) {
+    switch (event) {
+        case ENCODER_CW:
+            fs_browser_scroll_down();
+            fs_browser_render();
+            break;
+        case ENCODER_CCW:
+            fs_browser_scroll_up();
+            fs_browser_render();
+            break;
+        case ENCODER_CLICK:
+            fs_browser_select();
+            fs_browser_render();
+            break;
+        case ENCODER_LONG_PRESS:
+            if (fs_browser_back()) {
+                fs_browser_stop();
+                fs_browser_active = false;
+                encoder_set_callback(encoder_event_handler);
+                neopixel_set_color(COLOR_GREEN);
+                menu_render();
+            } else {
+                fs_browser_render();
+            }
+            break;
+    }
+}
+
+static void menu_fs_browser(void) {
+    fs_browser_active = true;
+    neopixel_set_color(COLOR_CYAN);
+    encoder_set_callback(fs_browser_encoder_handler);
+    fs_browser_enter();
+    fs_browser_render();
+}
+
+static void settings_ui_encoder_handler(encoder_event_t event) {
+    switch (event) {
+        case ENCODER_CW:
+            settings_scroll_down();
+            settings_render();
+            break;
+        case ENCODER_CCW:
+            settings_scroll_up();
+            settings_render();
+            break;
+        case ENCODER_CLICK:
+            settings_select();
+            settings_render();
+            break;
+        case ENCODER_LONG_PRESS:
+            settings_exit();
+            settings_ui_active = false;
+            encoder_set_callback(encoder_event_handler);
+            neopixel_set_color(COLOR_GREEN);
+            menu_render();
+            break;
+    }
+}
+
+static void menu_settings_ui(void) {
+    settings_ui_active = true;
+    neopixel_set_color(COLOR_WHITE);
+    encoder_set_callback(settings_ui_encoder_handler);
+    settings_enter();
+    settings_render();
+}
+
+static void espnow_encoder_handler(encoder_event_t event) {
+    switch (event) {
+        case ENCODER_CW:
+            espnow_recon_scroll_down();
+            espnow_recon_render();
+            break;
+        case ENCODER_CCW:
+            espnow_recon_scroll_up();
+            espnow_recon_render();
+            break;
+        case ENCODER_CLICK:
+            espnow_recon_render();
+            break;
+        case ENCODER_LONG_PRESS:
+            espnow_recon_stop();
+            espnow_active = false;
+            encoder_set_callback(encoder_event_handler);
+            neopixel_set_color(COLOR_GREEN);
+            menu_render();
+            break;
+    }
+}
+
+static void menu_espnow(void) {
+    espnow_active = true;
+    neopixel_set_color(COLOR_MAGENTA);
+    encoder_set_callback(espnow_encoder_handler);
+    espnow_recon_enter();
+    espnow_recon_start();
+    espnow_recon_render();
+}
+
+static void ieee154_encoder_handler(encoder_event_t event) {
+    if (event == ENCODER_LONG_PRESS) {
+        ieee154_sniff_stop();
+        ieee154_active = false;
+        encoder_set_callback(encoder_event_handler);
+        neopixel_set_color(COLOR_GREEN);
+        menu_render();
+    } else {
+        ieee154_sniff_render();
+    }
+}
+
+static void menu_ieee154(void) {
+    ieee154_active = true;
+    neopixel_set_color(COLOR_YELLOW);
+    encoder_set_callback(ieee154_encoder_handler);
+    ieee154_sniff_enter();
+    ieee154_sniff_start();
+    ieee154_sniff_render();
+}
+
 static menu_item_t wifi_menu[] = {
     {.label = "WiFi Scan",     .on_select = menu_wifi_scanner},
     {.label = "Client Sniff",  .on_select = menu_wifi_sniffer},
+    {.label = "WiFi Monitor",  .on_select = menu_wifi_monitor},
     {.label = "AP Mode",       .on_select = menu_ap_mode},
     {.label = "Deauth Attack", .on_select = menu_deauth_attack},
     {.label = "STA Connect",   .on_select = menu_sta_connect},
@@ -684,6 +1001,12 @@ static menu_item_t bluetooth_menu[] = {
     {.label = "Classifier",    .on_select = menu_ble_class},
     {.label = "Beacons",       .on_select = menu_ble_beacon},
     {.label = "Device Hunter", .on_select = menu_ble_hunt},
+    {.label = "GATT Explorer", .on_select = menu_ble_gatt},
+    {.label = "Notify Mon",    .on_select = menu_ble_notify},
+    {.label = "BLE Spam",      .on_select = menu_ble_spam},
+    {.label = "BadBLE HID",    .on_select = menu_ble_hid},
+    {.label = "Adv Logger",    .on_select = menu_ble_advlog},
+    {.label = "NUS Link",      .on_select = menu_ble_nus},
 };
 
 static menu_item_t games_menu[] = {
@@ -692,19 +1015,27 @@ static menu_item_t games_menu[] = {
     {.label = "Reaction Test", .on_select = menu_react},
 };
 
+static menu_item_t rf_menu[] = {
+    {.label = "ESP-NOW Recon", .on_select = menu_espnow},
+    {.label = "802.15.4 Sniff",.on_select = menu_ieee154},
+};
+
 static menu_item_t settings_menu[] = {
     {.label = "Device Info",   .on_select = menu_device_info},
-    {.label = "(more soon)",   .on_select = NULL},
+    {.label = "Settings",      .on_select = menu_settings_ui},
+    {.label = "File Explorer", .on_select = menu_fs_browser},
 };
 
 static void open_wifi_menu(void)      { menu_push_submenu(wifi_menu,      sizeof(wifi_menu)      / sizeof(wifi_menu[0])); }
 static void open_bluetooth_menu(void) { menu_push_submenu(bluetooth_menu, sizeof(bluetooth_menu) / sizeof(bluetooth_menu[0])); }
 static void open_games_menu(void)     { menu_push_submenu(games_menu,     sizeof(games_menu)     / sizeof(games_menu[0])); }
+static void open_rf_menu(void)        { menu_push_submenu(rf_menu,        sizeof(rf_menu)        / sizeof(rf_menu[0])); }
 static void open_settings_menu(void)  { menu_push_submenu(settings_menu,  sizeof(settings_menu)  / sizeof(settings_menu[0])); }
 
 static menu_item_t main_menu[] = {
     {.label = "WiFi",      .on_select = open_wifi_menu},
     {.label = "Bluetooth", .on_select = open_bluetooth_menu},
+    {.label = "RF / IoT",  .on_select = open_rf_menu},
     {.label = "Games",     .on_select = open_games_menu},
     {.label = "Settings",  .on_select = open_settings_menu},
 };
@@ -721,7 +1052,7 @@ static void encoder_event_handler(encoder_event_t event) {
             break;
         case ENCODER_CLICK:
             menu_select_current();
-            if (!scanner_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active && !webui_active && !game_active && !life_active && !react_active && !ble_scan_active && !ble_class_active && !ble_beacon_active && !ble_hunt_active) menu_render();
+            if (!scanner_active && !sniffer_active && !monitor_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active && !webui_active && !game_active && !life_active && !react_active && !ble_scan_active && !ble_class_active && !ble_beacon_active && !ble_hunt_active && !ble_gatt_active && !ble_notify_active && !ble_spam_active && !ble_hid_active && !ble_advlog_active && !ble_nus_active && !fs_browser_active && !settings_ui_active && !espnow_active && !ieee154_active) menu_render();
             break;
         case ENCODER_LONG_PRESS:
             menu_pop();
@@ -774,6 +1105,7 @@ void app_main(void) {
 
     wifi_scan_init();
     wifi_sniff_init();
+    wifi_monitor_init();
     wifi_ap_init();
     wifi_sta_init();
     wifi_attack_init();
@@ -781,6 +1113,13 @@ void app_main(void) {
     wifi_handshake_init();
     wifi_captures_init();
     wifi_webui_init();
+    wifi_profiles_init();
+    radio_mgr_init();
+    settings_init();
+    fs_browser_init();
+    espnow_recon_init();
+    ieee154_sniff_init();
+    cli_init();
 
     menu_init(main_menu, sizeof(main_menu) / sizeof(main_menu[0]));
     encoder_set_callback(encoder_event_handler);
@@ -788,19 +1127,31 @@ void app_main(void) {
     ESP_LOGI(TAG, "Boot complete");
 
     while (1) {
-        if (!scanner_active && !sniffer_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active && !webui_active && !game_active && !life_active && !react_active && !ble_scan_active && !ble_class_active && !ble_beacon_active && !ble_hunt_active) menu_render();
+        if (!scanner_active && !sniffer_active && !monitor_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active && !webui_active && !game_active && !life_active && !react_active && !ble_scan_active && !ble_class_active && !ble_beacon_active && !ble_hunt_active && !ble_gatt_active && !ble_notify_active && !ble_spam_active && !ble_hid_active && !ble_advlog_active && !ble_nus_active && !fs_browser_active && !settings_ui_active && !espnow_active && !ieee154_active) menu_render();
         if (attack_active && wifi_attack_is_running()) wifi_attack_render();
         if (ap_active && wifi_ap_is_running()) wifi_ap_render();
         if (sta_active && (wifi_sta_is_connecting() || wifi_sta_needs_refresh())) wifi_sta_render();
-        if (pmkid_active && (wifi_pmkid_is_running() || wifi_pmkid_needs_refresh())) wifi_pmkid_render();
-        if (handshake_active && (wifi_handshake_is_running() || wifi_handshake_needs_refresh())) wifi_handshake_render();
+        // Unconditional refresh while active (fixes first-render lag)
+        if (pmkid_active) wifi_pmkid_render();
+        if (handshake_active) wifi_handshake_render();
         if (captures_active && wifi_captures_needs_refresh()) wifi_captures_render();
         if (webui_active && wifi_webui_needs_refresh()) wifi_webui_render();
         if (sniffer_active) { wifi_sniff_render(); neopixel_pulse(COLOR_MAGENTA); }
+        if (monitor_active) { wifi_monitor_render(); neopixel_pulse(COLOR_CYAN); }
+        if (fs_browser_active && fs_browser_needs_refresh()) fs_browser_render();
+        if (settings_ui_active && settings_needs_refresh()) settings_render();
+        if (espnow_active) { espnow_recon_render(); neopixel_pulse(COLOR_MAGENTA); }
+        if (ieee154_active) { ieee154_sniff_render(); neopixel_pulse(COLOR_YELLOW); }
         if (ble_scan_active)   { ble_scan_tick();   neopixel_pulse(COLOR_BLUE); }
         if (ble_class_active)  { ble_class_tick();  neopixel_pulse(COLOR_BLUE); }
         if (ble_beacon_active) { ble_beacon_tick(); neopixel_pulse(COLOR_BLUE); }
-        if (ble_hunt_active)     ble_hunt_tick();   // hunt drives its own LED (RSSI colour)
+        if (ble_hunt_active)     ble_hunt_tick();
+        if (ble_gatt_active)   { ble_gatt_tick();   neopixel_pulse(COLOR_BLUE); }
+        if (ble_notify_active) { ble_notify_tick(); neopixel_pulse(COLOR_BLUE); }
+        if (ble_spam_active)   { ble_spam_tick();   neopixel_pulse(COLOR_MAGENTA); }
+        if (ble_hid_active)    { ble_hid_tick();    neopixel_pulse(COLOR_CYAN); }
+        if (ble_advlog_active) { ble_advlog_tick(); neopixel_pulse(COLOR_BLUE); }
+        if (ble_nus_active)    { ble_nus_tick();    neopixel_pulse(COLOR_CYAN); }
         battery_tick();
         vTaskDelay(pdMS_TO_TICKS(100));
     }

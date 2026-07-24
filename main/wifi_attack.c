@@ -1,6 +1,8 @@
 #include "wifi_attack.h"
 #include "wifi_scan.h"
+#include "wifi_sniffer.h"
 #include "deauth_engine.h"
+#include "radio_mgr.h"
 #include "ssd1306.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -16,7 +18,16 @@ typedef enum {
     ATTACK_STATE_RUNNING,
 } attack_state_t;
 
+typedef enum {
+    PROFILE_BROADCAST = 0,
+    PROFILE_TARGETED,
+    PROFILE_DISASSOC,
+    PROFILE_PROBE,
+    PROFILE_COUNT,
+} attack_profile_t;
+
 static attack_state_t     state         = ATTACK_STATE_PICK;
+static attack_profile_t   profile       = PROFILE_BROADCAST;
 static uint16_t           scroll_offset = 0;
 static uint16_t           selected_idx  = 0;
 static uint16_t           target_count  = 0;
@@ -26,7 +37,45 @@ static wifi_ap_info_t     targets[MAX_SCAN_RESULTS];
 static uint8_t  target_bssid[6];
 static uint8_t  target_channel;
 static char     target_ssid[33];
-static int64_t  attack_start_us = 0;
+static uint8_t  target_client[6];
+static bool     have_target_client      = false;
+static int64_t  attack_start_us         = 0;
+
+static const char *profile_name(attack_profile_t p) {
+    switch (p) {
+        case PROFILE_BROADCAST: return "Broadcast";
+        case PROFILE_TARGETED:  return "Targeted";
+        case PROFILE_DISASSOC:  return "Disassoc";
+        case PROFILE_PROBE:     return "Probe Flood";
+        default:                return "?";
+    }
+}
+
+static bool find_sniff_client_for_bssid(const uint8_t bssid[6], uint8_t out_mac[6]) {
+    uint16_t n = wifi_sniff_get_count();
+    for (uint16_t i = 0; i < n; i++) {
+        const wifi_client_t *c = wifi_sniff_get_client(i);
+        if (!c || !c->associated) continue;
+        if (memcmp(c->ap_bssid, bssid, 6) != 0) continue;
+        memcpy(out_mac, c->mac, 6);
+        return true;
+    }
+    return false;
+}
+
+static attack_profile_t next_available_profile(attack_profile_t cur) {
+    for (int step = 1; step <= PROFILE_COUNT; step++) {
+        attack_profile_t next = (attack_profile_t)((cur + step) % PROFILE_COUNT);
+        if (next == PROFILE_TARGETED) {
+            if (!find_sniff_client_for_bssid(target_bssid, target_client)) {
+                continue;
+            }
+            have_target_client = true;
+        }
+        return next;
+    }
+    return PROFILE_BROADCAST;
+}
 
 void wifi_attack_init(void) {
     deauth_engine_init();
@@ -35,8 +84,10 @@ void wifi_attack_init(void) {
 
 void wifi_attack_enter(void) {
     state         = ATTACK_STATE_PICK;
+    profile       = PROFILE_BROADCAST;
     scroll_offset = 0;
     selected_idx  = 0;
+    have_target_client = false;
 
     const wifi_ap_info_t *scan = wifi_scan_get_results(&target_count);
     if (target_count > MAX_SCAN_RESULTS) target_count = MAX_SCAN_RESULTS;
@@ -81,7 +132,15 @@ void wifi_attack_scroll_down(void) {
     }
 }
 
-void wifi_attack_select(void) {
+void wifi_attack_cycle_profile(void) {
+    if (target_count == 0 || state != ATTACK_STATE_PICK) return;
+
+    memcpy(target_bssid, targets[selected_idx].bssid, 6);
+    profile = next_available_profile(profile);
+    ESP_LOGI(TAG, "Profile: %s", profile_name(profile));
+}
+
+void wifi_attack_start(void) {
     if (target_count == 0) return;
 
     memcpy(target_bssid, targets[selected_idx].bssid, 6);
@@ -89,15 +148,41 @@ void wifi_attack_select(void) {
     strncpy(target_ssid, targets[selected_idx].ssid, 32);
     target_ssid[32] = '\0';
 
+    have_target_client = find_sniff_client_for_bssid(target_bssid, target_client);
+    if (profile == PROFILE_TARGETED && !have_target_client) {
+        profile = PROFILE_BROADCAST;
+    }
+
     deauth_target_t t = {0};
     memcpy(t.bssid, target_bssid, 6);
     t.channel = target_channel;
 
+    deauth_engine_set_mode(profile == PROFILE_DISASSOC);
+
+    if (!radio_mgr_enter(RADIO_MODE_WIFI_ATTACK)) {
+        ESP_LOGE(TAG, "Radio busy — cannot start attack");
+        return;
+    }
+
     attack_start_us = esp_timer_get_time();
     state           = ATTACK_STATE_RUNNING;
 
-    deauth_engine_start(&t, 1);
-    ESP_LOGI(TAG, "Attack started: %s ch%u", target_ssid, target_channel);
+    switch (profile) {
+        case PROFILE_TARGETED:
+            deauth_engine_start_targeted(&t, target_client);
+            break;
+        case PROFILE_PROBE:
+            deauth_engine_start_probe_flood(&t, target_ssid);
+            break;
+        case PROFILE_DISASSOC:
+        case PROFILE_BROADCAST:
+        default:
+            deauth_engine_start(&t, 1);
+            break;
+    }
+
+    ESP_LOGI(TAG, "Attack started (%s): %s ch%u",
+             profile_name(profile), target_ssid, target_channel);
 }
 
 void wifi_attack_stop(void) {
@@ -106,6 +191,7 @@ void wifi_attack_stop(void) {
         return;
     }
     deauth_engine_stop();
+    radio_mgr_leave(RADIO_MODE_WIFI_ATTACK);
     state = ATTACK_STATE_PICK;
     ESP_LOGI(TAG, "Attack stopped: %lu frames sent",
              (unsigned long)deauth_engine_get_frames());
@@ -152,6 +238,10 @@ static void render_picker(void) {
         ssd1306_draw_string(0, row + 2, line);
     }
 
+    char prof_line[17];
+    snprintf(prof_line, sizeof(prof_line), "%s LN>start", profile_name(profile));
+    ssd1306_draw_string(0, 7, prof_line);
+
     ssd1306_flush();
 }
 
@@ -172,8 +262,8 @@ static void render_running(void) {
     uint32_t frames = deauth_engine_get_frames();
     uint32_t pps    = deauth_engine_get_pps();
 
-    snprintf(line, sizeof(line), "Ch:%-2u  %s",
-             target_channel, target_channel > 14 ? "5GHz" : "2.4G");
+    snprintf(line, sizeof(line), "%-10.10s C%-3u",
+             profile_name(profile), (unsigned)target_channel);
     ssd1306_draw_string(0, 2, line);
 
     snprintf(line, sizeof(line), "%02X:%02X:%02X",
@@ -183,10 +273,21 @@ static void render_running(void) {
              target_bssid[3], target_bssid[4], target_bssid[5]);
     ssd1306_draw_string(0, 4, line);
 
-    snprintf(line, sizeof(line), "Sent: %lu", (unsigned long)frames);
-    ssd1306_draw_string(0, 5, line);
+    if (profile == PROFILE_TARGETED && have_target_client) {
+        snprintf(line, sizeof(line), "Cl:%02X:%02X:%02X",
+                 target_client[3], target_client[4], target_client[5]);
+        ssd1306_draw_string(0, 5, line);
+    } else {
+        snprintf(line, sizeof(line), "Sent: %lu", (unsigned long)frames);
+        ssd1306_draw_string(0, 5, line);
+    }
 
-    snprintf(line, sizeof(line), "~%lu pps LN>stop", (unsigned long)pps);
+    if (profile == PROFILE_TARGETED && have_target_client) {
+        snprintf(line, sizeof(line), "Sent:%lu ~%lup/s",
+                 (unsigned long)frames, (unsigned long)pps);
+    } else {
+        snprintf(line, sizeof(line), "~%lu pps LN>stop", (unsigned long)pps);
+    }
     ssd1306_draw_string(0, 6, line);
 
     ssd1306_flush();
@@ -203,6 +304,7 @@ void wifi_attack_render(void) {
 
 uint32_t    wifi_attack_get_frames(void)     { return deauth_engine_get_frames(); }
 const char *wifi_attack_get_target(void)     { return target_ssid; }
+const char *wifi_attack_get_profile(void)    { return profile_name(profile); }
 int64_t     wifi_attack_get_elapsed_ms(void) {
     if (!deauth_engine_is_running() || attack_start_us == 0) return 0;
     return (esp_timer_get_time() - attack_start_us) / 1000LL;

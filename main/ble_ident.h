@@ -25,6 +25,12 @@ typedef struct {
 // Short device-type label from company ID, service UUID, appearance, beacon type.
 const char *ble_classify_device(const ble_dev_info_t *d);
 
+// Bluetooth SIG company ID → vendor string, or NULL if unknown.
+const char *ble_company_name(uint16_t company_id);
+
+// Apple Continuity manufacturer payload (company 0x004C + type byte) → label.
+const char *ble_apple_continuity_label(const uint8_t *mfg, uint8_t len);
+
 // Decode iBeacon / Eddystone from a raw advertisement payload. Returns false if
 // the payload is not that beacon type.
 bool ble_decode_ibeacon(const uint8_t *adv, uint8_t len, ibeacon_t *out);

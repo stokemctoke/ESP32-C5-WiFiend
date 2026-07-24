@@ -11,7 +11,12 @@
 #include "ssd1306.h"
 #include "neopixel.h"
 #include "battery.h"
+#include "ota_update.h"
+#include "ble_core.h"
+#include "ble_scan.h"
+#include "ble_ident.h"
 #include "esp_wifi.h"
+#include "esp_ota_ops.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -43,6 +48,7 @@ static int               s_ws_fds[MAX_WS_CLIENTS];
 
 static webui_op_start_cb_t s_op_start_cb = NULL;
 static webui_op_stop_cb_t  s_op_stop_cb  = NULL;
+static volatile bool       s_ble_scanning = false;
 
 // ---------- WS client registry ----------
 
@@ -164,8 +170,10 @@ static void start_ap_and_httpd(void) {
     vTaskDelay(pdMS_TO_TICKS(200));
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers = 8;
-    hcfg.lru_purge_enable = true;
+    hcfg.max_uri_handlers  = 12;
+    hcfg.max_resp_headers  = 8;
+    hcfg.recv_wait_timeout = 30;
+    hcfg.lru_purge_enable  = true;
 
     if (httpd_start(&s_httpd, &hcfg) != ESP_OK) {
         ESP_LOGE(TAG, "httpd_start failed");
@@ -183,6 +191,43 @@ static void stop_ap_and_httpd(void) {
 }
 
 // ---------- cJSON state builder ----------
+
+static cJSON *build_ble_array(void) {
+    cJSON *arr = cJSON_CreateArray();
+    ble_scan_lock();
+    uint16_t cnt = 0;
+    const ble_dev_info_t *devs = ble_scan_get_results(&cnt);
+    for (uint16_t i = 0; i < cnt; i++) {
+        const ble_dev_info_t *d = &devs[i];
+        cJSON *dev = cJSON_CreateObject();
+        char addr[18];
+        snprintf(addr, sizeof(addr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 d->addr[5], d->addr[4], d->addr[3],
+                 d->addr[2], d->addr[1], d->addr[0]);
+        cJSON_AddStringToObject(dev, "addr", addr);
+        cJSON_AddStringToObject(dev, "name", d->name[0] ? d->name : "");
+        cJSON_AddNumberToObject(dev, "rssi", d->rssi);
+        cJSON_AddStringToObject(dev, "type", ble_classify_device(d));
+        cJSON_AddItemToArray(arr, dev);
+    }
+    ble_scan_unlock();
+    return arr;
+}
+
+static void push_ble_update(void) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "event", "ble_update");
+    cJSON_AddBoolToObject(root, "scanning", s_ble_scanning);
+    ble_scan_lock();
+    uint16_t cnt = 0;
+    ble_scan_get_results(&cnt);
+    cJSON_AddNumberToObject(root, "count", cnt);
+    ble_scan_unlock();
+    cJSON_AddItemToObject(root, "devices", build_ble_array());
+    char *s = cJSON_PrintUnformatted(root);
+    if (s) { broadcast_text(s); free(s); }
+    cJSON_Delete(root);
+}
 
 static cJSON *build_state_json(void) {
     cJSON *root = cJSON_CreateObject();
@@ -236,6 +281,13 @@ static cJSON *build_state_json(void) {
     if (batt != 0xFF) cJSON_AddNumberToObject(root, "battery_pct", batt);
 
     cJSON_AddNumberToObject(root, "capture_count", wifi_captures_get_count());
+    cJSON_AddBoolToObject(root, "ble_scanning", s_ble_scanning);
+    cJSON_AddItemToObject(root, "ble_devices", build_ble_array());
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running && running->label[0])
+        cJSON_AddStringToObject(root, "ota_slot", running->label);
+
     return root;
 }
 
@@ -370,6 +422,118 @@ static esp_err_t entry_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// ---------- OTA firmware upload ----------
+
+#define OTA_RECV_BUF 4096
+
+static void ota_progress_broadcast(uint8_t pct, void *ctx) {
+    (void)ctx;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"event\":\"ota\",\"state\":\"writing\",\"percent\":%u}", (unsigned)pct);
+    broadcast_text(buf);
+}
+
+static esp_err_t ota_send_json(httpd_req_t *req, bool ok, const char *msg) {
+    char body[192];
+    snprintf(body, sizeof(body), "{\"ok\":%s,\"msg\":\"%s\"}", ok ? "true" : "false", msg ? msg : "");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, body, strlen(body));
+    return ESP_OK;
+}
+
+static esp_err_t ota_handler(httpd_req_t *req) {
+    if (req->method != HTTP_POST) {
+        httpd_resp_send_404(req);
+        return ESP_OK;
+    }
+    if (ota_update_is_active()) {
+        return ota_send_json(req, false, "OTA already in progress");
+    }
+
+    size_t total = req->content_len;
+    if (total == 0) {
+        return ota_send_json(req, false, "Empty body");
+    }
+    if (total > 0x200000) {
+        return ota_send_json(req, false, "Image too large for OTA slot");
+    }
+
+    emit_log("OTA upload started (%u bytes)", (unsigned)total);
+    broadcast_text("{\"event\":\"ota\",\"state\":\"start\",\"percent\":0}");
+
+    ota_update_set_progress_cb(ota_progress_broadcast, NULL);
+    esp_err_t err = ota_update_begin(total);
+    if (err != ESP_OK) {
+        ota_update_set_progress_cb(NULL, NULL);
+        broadcast_text("{\"event\":\"ota\",\"state\":\"error\",\"msg\":\"begin failed\"}");
+        return ota_send_json(req, false, "OTA begin failed");
+    }
+
+    uint8_t *buf = malloc(OTA_RECV_BUF);
+    if (!buf) {
+        ota_update_abort();
+        ota_update_set_progress_cb(NULL, NULL);
+        return ota_send_json(req, false, "Out of memory");
+    }
+
+    size_t received = 0;
+    bool header_ok = false;
+
+    while (received < total) {
+        int want = (int)((total - received > OTA_RECV_BUF) ? OTA_RECV_BUF : (total - received));
+        int r = httpd_req_recv(req, (char *)buf, want);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT)
+            continue;
+        if (r <= 0) {
+            free(buf);
+            ota_update_abort();
+            ota_update_set_progress_cb(NULL, NULL);
+            broadcast_text("{\"event\":\"ota\",\"state\":\"error\",\"msg\":\"recv failed\"}");
+            emit_log("OTA recv failed at %u/%u", (unsigned)received, (unsigned)total);
+            return ota_send_json(req, false, "Upload interrupted");
+        }
+
+        if (!header_ok) {
+            if (!ota_update_validate_header(buf, (size_t)r)) {
+                free(buf);
+                ota_update_abort();
+                ota_update_set_progress_cb(NULL, NULL);
+                broadcast_text("{\"event\":\"ota\",\"state\":\"error\",\"msg\":\"bad header\"}");
+                emit_log("OTA rejected: invalid image header");
+                return ota_send_json(req, false, "Invalid firmware image");
+            }
+            header_ok = true;
+        }
+
+        err = ota_update_write(buf, (size_t)r);
+        if (err != ESP_OK) {
+            free(buf);
+            ota_update_abort();
+            ota_update_set_progress_cb(NULL, NULL);
+            broadcast_text("{\"event\":\"ota\",\"state\":\"error\",\"msg\":\"write failed\"}");
+            return ota_send_json(req, false, "OTA write failed");
+        }
+        received += (size_t)r;
+    }
+    free(buf);
+    ota_update_set_progress_cb(NULL, NULL);
+
+    err = ota_update_end(true);
+    if (err != ESP_OK) {
+        broadcast_text("{\"event\":\"ota\",\"state\":\"error\",\"msg\":\"finalize failed\"}");
+        return ota_send_json(req, false, "OTA finalize failed");
+    }
+
+    broadcast_text("{\"event\":\"ota\",\"state\":\"done\",\"percent\":100}");
+    emit_log("OTA complete — rebooting");
+    ota_send_json(req, true, "OK — rebooting");
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
+}
+
 // ---------- SPA root handler ----------
 
 static esp_err_t root_handler(httpd_req_t *req) {
@@ -435,6 +599,46 @@ static void scan_task(void *arg) {
     wifi_scan_get_results(&cnt);
     emit_log("Scan complete: %u AP%s", (unsigned)cnt, cnt == 1 ? "" : "s");
     push_scan_done();
+    vTaskDelete(NULL);
+}
+
+static void ble_scan_task(void *arg) {
+    (void)arg;
+    emit_log("BLE scan starting...");
+    ble_core_init();
+
+    for (int i = 0; i < 100 && !ble_core_is_ready(); i++)
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+    if (!ble_core_is_ready()) {
+        emit_log("BLE core not ready");
+        s_ble_scanning = false;
+        broadcast_text("{\"event\":\"ble_update\",\"scanning\":false,\"count\":0,\"devices\":[]}");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ble_scan_clear();
+    if (s_op_start_cb) s_op_start_cb("ble");
+    s_ble_scanning = true;
+    ble_scan_disc_start();
+    push_ble_update();
+
+    for (int tick = 0; tick < 60 && s_running && s_ble_scanning; tick++) {
+        push_ble_update();
+        vTaskDelay(pdMS_TO_TICKS(800));
+    }
+
+    ble_scan_disc_stop();
+    s_ble_scanning = false;
+    if (s_op_stop_cb) s_op_stop_cb("ble");
+    push_ble_update();
+
+    ble_scan_lock();
+    uint16_t cnt = 0;
+    ble_scan_get_results(&cnt);
+    ble_scan_unlock();
+    emit_log("BLE scan done: %u device%s", (unsigned)cnt, cnt == 1 ? "" : "s");
     vTaskDelete(NULL);
 }
 
@@ -684,6 +888,16 @@ static void handle_command(httpd_req_t *req, const char *json_str) {
         broadcast_text("{\"event\":\"server_stopping\"}");
         vTaskDelay(pdMS_TO_TICKS(50));
         wifi_webui_stop();
+
+    } else if (!strcmp(cmd, "ble_scan_start")) {
+        if (!s_ble_scanning)
+            xTaskCreate(ble_scan_task, "webui_ble", 4096, NULL, 4, NULL);
+
+    } else if (!strcmp(cmd, "ble_scan_stop")) {
+        s_ble_scanning = false;
+        ble_scan_disc_stop();
+        if (s_op_stop_cb) s_op_stop_cb("ble");
+        push_ble_update();
     }
 
     cJSON_Delete(root);
@@ -730,6 +944,7 @@ static void register_uri_handlers(void) {
     httpd_uri_t r_hshk    = { .uri = "/handshakes.log", .method = HTTP_GET, .handler = handshake_log_handler };
     httpd_uri_t r_entry   = { .uri = "/entry",          .method = HTTP_GET, .handler = entry_handler };
     httpd_uri_t r_caps    = { .uri = "/captures",       .method = HTTP_GET, .handler = captures_json_handler };
+    httpd_uri_t r_ota     = { .uri = "/ota",            .method = HTTP_POST, .handler = ota_handler };
 
     httpd_register_uri_handler(s_httpd, &r_root);
     httpd_register_uri_handler(s_httpd, &r_ws);
@@ -737,6 +952,7 @@ static void register_uri_handlers(void) {
     httpd_register_uri_handler(s_httpd, &r_hshk);
     httpd_register_uri_handler(s_httpd, &r_entry);
     httpd_register_uri_handler(s_httpd, &r_caps);
+    httpd_register_uri_handler(s_httpd, &r_ota);
 }
 
 // ---------- OLED render ----------
@@ -797,6 +1013,8 @@ void wifi_webui_enter(void) {
 
 void wifi_webui_stop(void) {
     if (!s_running) return;
+    s_ble_scanning = false;
+    ble_scan_disc_stop();
     // Halt any operation that could outlive the WebUI (e.g. a cross-band deauth
     // the user is escaping from via the encoder after the phone dropped).
     if (wifi_attack_is_running()) wifi_attack_stop();

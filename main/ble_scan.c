@@ -13,6 +13,7 @@
 #include "nimble/hci_common.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static const char *TAG = "ble_scan";
 
@@ -37,6 +38,21 @@ static void ensure_mutex(void) {
 void ble_scan_lock(void)   { ensure_mutex(); xSemaphoreTake(s_mutex, portMAX_DELAY); }
 void ble_scan_unlock(void) { if (s_mutex) xSemaphoreGive(s_mutex); }
 
+static const uint8_t *find_ad(const uint8_t *adv, uint8_t len, uint8_t type, uint8_t *out_len) {
+    uint8_t i = 0;
+    while (i + 1 < len) {
+        uint8_t l = adv[i];
+        if (l == 0) break;
+        if (i + 1 + l > len) break;
+        if (adv[i + 1] == type) {
+            *out_len = (uint8_t)(l - 1);
+            return &adv[i + 2];
+        }
+        i += l + 1;
+    }
+    return NULL;
+}
+
 const ble_dev_info_t *ble_scan_get_results(uint16_t *count) {
     if (count) *count = s_count;
     return s_results;
@@ -56,6 +72,30 @@ static int find_idx(const uint8_t *addr) {
     for (uint16_t i = 0; i < s_count; i++)
         if (memcmp(s_results[i].addr, addr, 6) == 0) return (int)i;
     return -1;
+}
+
+static int cmp_rssi_desc(const void *a, const void *b) {
+    const ble_dev_info_t *da = (const ble_dev_info_t *)a;
+    const ble_dev_info_t *db = (const ble_dev_info_t *)b;
+    return (int)db->rssi - (int)da->rssi;
+}
+
+static void ble_scan_sort_rssi(void) {
+    if (s_count < 2) return;
+    uint8_t sel_addr[6];
+    bool have_sel = (s_count > 0);
+    if (have_sel) memcpy(sel_addr, s_results[s_selected].addr, 6);
+
+    qsort(s_results, s_count, sizeof(ble_dev_info_t), cmp_rssi_desc);
+
+    if (have_sel) {
+        for (uint16_t i = 0; i < s_count; i++) {
+            if (memcmp(s_results[i].addr, sel_addr, 6) == 0) {
+                s_selected = i;
+                break;
+            }
+        }
+    }
 }
 
 // Apply one disc report to the results table (called under mutex).
@@ -107,6 +147,8 @@ static void apply_report(struct ble_gap_disc_desc *d) {
         if (ble_decode_ibeacon(e->raw, e->raw_len, &ib))        e->beacon_type = BLE_BEACON_IBEACON;
         else if (ble_decode_eddystone(e->raw, e->raw_len, &ed)) e->beacon_type = BLE_BEACON_EDDYSTONE;
     }
+
+    ble_scan_sort_rssi();
 }
 
 // ---------- GAP event callback (runs on the NimBLE host task) ----------
@@ -160,9 +202,6 @@ static void fmt_addr_full(const ble_dev_info_t *e, char *out, size_t n) {
     snprintf(out, n, "%02X:%02X:%02X:%02X:%02X:%02X",
              e->addr[5], e->addr[4], e->addr[3], e->addr[2], e->addr[1], e->addr[0]);
 }
-static const char *addr_type_str(uint8_t t) {
-    return (t == BLE_ADDR_PUBLIC) ? "Pub" : "Rnd";
-}
 static bool evt_is_connectable(uint8_t et) {
     return et == BLE_HCI_ADV_RPT_EVTYPE_ADV_IND || et == BLE_HCI_ADV_RPT_EVTYPE_DIR_IND;
 }
@@ -197,6 +236,17 @@ static void render_list(void) {
     ssd1306_flush();
 }
 
+static void fmt_hex_line(const uint8_t *data, uint8_t len, char *out, size_t n, uint8_t offset) {
+    out[0] = '\0';
+    if (!data || len == 0) return;
+    size_t pos = 0;
+    for (uint8_t i = offset; i < len && pos + 3 < n; i++) {
+        pos += (size_t)snprintf(out + pos, n - pos, "%02X", data[i]);
+        if (i + 1 < len && pos + 1 < n) out[pos++] = ' ';
+    }
+    out[pos] = '\0';
+}
+
 static void render_detail(void) {
     if (s_count == 0) { render_list(); return; }
     const ble_dev_info_t *e = &s_results[s_selected];
@@ -213,22 +263,29 @@ static void render_detail(void) {
     char mac[18]; fmt_addr_full(e, mac, sizeof(mac));
     ssd1306_draw_string(0, 3, mac);
 
-    snprintf(line, sizeof(line), "%s %s  Sv:%04X",
-             addr_type_str(e->addr_type),
-             evt_is_connectable(e->evt_type) ? "Con" : "NoC",
-             e->svc_uuid16);
+    const char *co = ble_company_name(e->company_id);
+    uint8_t mlen = 0;
+    const uint8_t *mfg = find_ad(e->raw, e->raw_len, 0xFF, &mlen);
+    const char *cont = ble_apple_continuity_label(mfg, mlen);
+    if (co && cont)
+        snprintf(line, sizeof(line), "%-8.8s %s", co, cont);
+    else if (co)
+        snprintf(line, sizeof(line), "Co: %s", co);
+    else if (cont)
+        snprintf(line, sizeof(line), "Apple %s", cont);
+    else
+        snprintf(line, sizeof(line), "Co:%04X Type:%s", e->company_id, ble_classify_device(e));
     ssd1306_draw_string(0, 4, line);
 
-    snprintf(line, sizeof(line), "Co:%04X Ap:%04X",
-             e->company_id, e->appearance);
-    ssd1306_draw_string(0, 5, line);
+    fmt_hex_line(e->raw, e->raw_len, line, sizeof(line), 0);
+    ssd1306_draw_string(0, 5, line[0] ? line : "(no raw)");
 
-    snprintf(line, sizeof(line), "Type: %s", ble_classify_device(e));
-    ssd1306_draw_string(0, 6, line);
+    fmt_hex_line(e->raw, e->raw_len, line, sizeof(line), 8);
+    if (line[0]) ssd1306_draw_string(0, 6, line);
 
-    if (e->beacon_type == BLE_BEACON_IBEACON)        ssd1306_draw_string(0, 7, "iBeacon payload");
-    else if (e->beacon_type == BLE_BEACON_EDDYSTONE) ssd1306_draw_string(0, 7, "Eddystone payload");
-    else ssd1306_draw_string(0, 7, "Long>back");
+    snprintf(line, sizeof(line), "%s Sv:%04X",
+             evt_is_connectable(e->evt_type) ? "Con" : "NoC", e->svc_uuid16);
+    ssd1306_draw_string(0, 7, line);
     ssd1306_flush();
 }
 

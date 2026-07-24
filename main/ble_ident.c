@@ -19,6 +19,66 @@ static const uint8_t *find_ad(const uint8_t *adv, uint8_t len, uint8_t type, uin
     return NULL;
 }
 
+typedef struct {
+    uint16_t    id;
+    const char *name;
+} company_entry_t;
+
+static const company_entry_t s_companies[] = {
+    { 0x0006, "Microsoft" },
+    { 0x0067, "GoPro" },
+    { 0x0075, "Samsung" },
+    { 0x0078, "Fitbit" },
+    { 0x0083, "Meta" },
+    { 0x0087, "Garmin" },
+    { 0x009E, "Bose" },
+    { 0x00E0, "Google" },
+    { 0x012D, "Sony" },
+    { 0x0157, "Tile" },
+    { 0x027D, "Huawei" },
+    { 0x038F, "Xiaomi" },
+    { 0x050E, "Chipolo" },
+    { 0x0590, "Nothing" },
+    { 0x06A3, "OnePlus" },
+    { 0x08E4, "DJI" },
+    { 0x004C, "Apple" },
+    { 0x0059, "Nordic" },
+};
+
+const char *ble_company_name(uint16_t company_id) {
+    if (company_id == 0xFFFF) return NULL;
+    for (unsigned i = 0; i < sizeof(s_companies) / sizeof(s_companies[0]); i++)
+        if (s_companies[i].id == company_id) return s_companies[i].name;
+    return NULL;
+}
+
+typedef struct {
+    uint8_t     type;
+    const char *label;
+} continuity_entry_t;
+
+static const continuity_entry_t s_continuity[] = {
+    { 0x02, "iBeacon" },
+    { 0x05, "AirDrop" },
+    { 0x07, "AirPods" },
+    { 0x08, "HomeKit" },
+    { 0x09, "NearAct" },
+    { 0x0A, "AirPlay" },
+    { 0x0C, "Handoff" },
+    { 0x0F, "AirTag" },
+    { 0x10, "NearInfo" },
+    { 0x12, "FindMy" },
+};
+
+const char *ble_apple_continuity_label(const uint8_t *mfg, uint8_t len) {
+    if (!mfg || len < 3) return NULL;
+    if (!(mfg[0] == 0x4C && mfg[1] == 0x00)) return NULL;
+    uint8_t type = mfg[2];
+    for (unsigned i = 0; i < sizeof(s_continuity) / sizeof(s_continuity[0]); i++)
+        if (s_continuity[i].type == type) return s_continuity[i].label;
+    return NULL;
+}
+
 bool ble_decode_ibeacon(const uint8_t *adv, uint8_t len, ibeacon_t *out) {
     uint8_t mlen = 0;
     const uint8_t *m = find_ad(adv, len, 0xFF, &mlen);   // manufacturer specific
@@ -105,14 +165,15 @@ const char *ble_classify_device(const ble_dev_info_t *d) {
         default: break;
     }
 
-    switch (d->company_id) {
-        case 0x004C: return "Apple";
-        case 0x0075: return "Samsung";
-        case 0x0006: return "Microsoft";
-        case 0x00E0: return "Google";
-        case 0x0059: return "Nordic";
-        default: break;
+    if (d->company_id == 0x004C && d->raw_len > 0) {
+        uint8_t mlen = 0;
+        const uint8_t *m = find_ad(d->raw, d->raw_len, 0xFF, &mlen);
+        const char *cont = ble_apple_continuity_label(m, mlen);
+        if (cont) return cont;
     }
+
+    const char *co = ble_company_name(d->company_id);
+    if (co) return co;
 
     return "Unknown";
 }

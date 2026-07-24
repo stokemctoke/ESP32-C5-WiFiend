@@ -290,18 +290,28 @@ static void render_running(void) {
         ssd1306_draw_string(0, 4, " Waiting...");
     }
 
-    // Row 6: latest captured password — scrolls when longer than 13 chars
+    // Row 6: latest DNS query hostname
+    {
+        const char *dns = captive_portal_get_dns_log(0);
+        if (dns && dns[0]) {
+            snprintf(line, sizeof(line), "DNS:%-12.12s", dns);
+        } else {
+            snprintf(line, sizeof(line), "DNS: (none)");
+        }
+        ssd1306_draw_string(0, 6, line);
+    }
+
+    // Row 7: latest captured password or exit hint
     if (cap_count > 0) {
         const cp_capture_t *cap = captive_portal_get_latest();
         if (cap) {
             size_t pw_len = strlen(cap->password);
             if (pw_len > 13) {
-                // Advance one char every 4 renders (~400ms at 100ms loop rate)
                 pw_scroll_tick++;
                 if (pw_scroll_tick >= 4) {
                     pw_scroll_tick = 0;
                     if (pw_scroll_offset + 13 >= pw_len) {
-                        pw_scroll_offset = 0;   // wrap back to start
+                        pw_scroll_offset = 0;
                     } else {
                         pw_scroll_offset++;
                     }
@@ -313,12 +323,11 @@ static void render_running(void) {
             }
             snprintf(line, sizeof(line), "PW:%-13.13s",
                      cap->password + pw_scroll_offset);
-            ssd1306_draw_string(0, 6, line);
+            ssd1306_draw_string(0, 7, line);
         }
+    } else {
+        ssd1306_draw_string(0, 7, "LN>stop");
     }
-
-    // Row 7: exit hint always visible
-    ssd1306_draw_string(0, 7, "LN>stop");
     ssd1306_flush();
 }
 

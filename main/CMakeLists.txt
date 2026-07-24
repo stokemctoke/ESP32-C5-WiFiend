@@ -6,8 +6,13 @@ idf_component_register(
         neopixel.c
         battery.c
         menu.c
+        settings.c
+        fs_browser.c
+        oui_lookup.c
+        radio_mgr.c
         wifi_scan.c
         wifi_sniffer.c
+        wifi_monitor.c
         wifi_ap.c
         wifi_sta.c
         wifi_attack.c
@@ -15,8 +20,10 @@ idf_component_register(
         wifi_pmkid.c
         wifi_handshake.c
         wifi_captures.c
+        wifi_profiles.c
         captures_http.c
         wifi_webui.c
+        ota_update.c
         captive_portal.c
         game_pong.c
         game_life.c
@@ -28,6 +35,15 @@ idf_component_register(
         ble_class.c
         ble_beacon.c
         ble_hunt.c
+        ble_gatt.c
+        ble_notify.c
+        ble_spam.c
+        ble_hid.c
+        ble_advlog.c
+        ble_nus.c
+        espnow_recon.c
+        ieee154_sniff.c
+        cli.c
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         nvs_flash
@@ -42,8 +58,11 @@ idf_component_register(
         esp_hw_support
         lwip
         spi_flash
+        app_update
         joltwallet__littlefs
         bt
+        console
+        ieee802154
 )
 
 # Patched libnet80211 must appear before ESP-IDF's stock version so its
