@@ -40,7 +40,7 @@ void wifi_scan_init(void) {
     ESP_LOGI(TAG, "WiFi scan init OK");
 }
 
-uint16_t wifi_scan_start(void) {
+static uint16_t wifi_scan_run(bool animate) {
     result_count = 0;
     scroll_offset = 0;
     selected_idx = 0;
@@ -63,23 +63,31 @@ uint16_t wifi_scan_start(void) {
         return 0;
     }
 
-    // Animate while WiFi driver scans — spinner on one row, rest of screen static
-    static const char spin[] = "|/-\\";
-    uint8_t frame = 0;
-    ssd1306_clear_buffer();
-    ssd1306_draw_header("WiFi Scan", "Scanning...");
-    ssd1306_flush();
-
-    while (!(xEventGroupGetBits(s_scan_done) & SCAN_DONE_BIT)) {
-        char row[17];
-        snprintf(row, sizeof(row), "  Scanning... %c", spin[frame++ & 3]);
-        ssd1306_draw_string(0, 4, row);
+    if (animate) {
+        static const char spin[] = "|/-\\";
+        uint8_t frame = 0;
+        ssd1306_clear_buffer();
+        ssd1306_draw_header("WiFi Scan", "Scanning...");
         ssd1306_flush();
-        neopixel_pulse(COLOR_YELLOW);
-        vTaskDelay(pdMS_TO_TICKS(250));
+
+        while (!(xEventGroupGetBits(s_scan_done) & SCAN_DONE_BIT)) {
+            char row[17];
+            snprintf(row, sizeof(row), "  Scanning... %c", spin[frame++ & 3]);
+            ssd1306_draw_string(0, 4, row);
+            ssd1306_flush();
+            neopixel_pulse(COLOR_YELLOW);
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+        neopixel_set_color(COLOR_YELLOW);
+    } else {
+        EventBits_t bits = xEventGroupWaitBits(
+            s_scan_done, SCAN_DONE_BIT, pdFALSE, pdTRUE, pdMS_TO_TICKS(45000));
+        if (!(bits & SCAN_DONE_BIT)) {
+            ESP_LOGE(TAG, "Scan timed out");
+            esp_wifi_scan_stop();
+            return 0;
+        }
     }
-    // Scan complete — solid yellow while browsing the result list
-    neopixel_set_color(COLOR_YELLOW);
 
     uint16_t count = MAX_SCAN_RESULTS;
     err = esp_wifi_scan_get_ap_records(&count, ap_records);
@@ -118,6 +126,14 @@ uint16_t wifi_scan_start(void) {
 
     ESP_LOGI(TAG, "Scan complete: %d APs", result_count);
     return result_count;
+}
+
+uint16_t wifi_scan_start(void) {
+    return wifi_scan_run(true);
+}
+
+uint16_t wifi_scan_start_quiet(void) {
+    return wifi_scan_run(false);
 }
 
 const wifi_ap_info_t *wifi_scan_get_results(uint16_t *count) {

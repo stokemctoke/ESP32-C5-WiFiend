@@ -24,6 +24,8 @@ idf_component_register(
         captures_http.c
         wifi_webui.c
         ota_update.c
+        ota_github.c
+        boot_mode.c
         captive_portal.c
         game_pong.c
         game_life.c
@@ -52,6 +54,10 @@ idf_component_register(
         esp_event
         esp_timer
         esp_http_server
+        esp_http_client
+        esp_https_ota
+        esp-tls
+        mbedtls
         driver
         led_strip
         esp_adc

@@ -5,8 +5,12 @@
 #include "esp_netif.h"
 #include "esp_wifi_default.h"
 #include "esp_event.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "board/xiao_esp32c5.h"
+#include "boot_mode.h"
+#include "ota_github.h"
 
 #include "ssd1306.h"
 #include "encoder.h"
@@ -53,6 +57,10 @@
 #include "cli.h"
 
 static const char *TAG = "main";
+
+// BOOT button (GPIO28): hold 2s → reboot into Remote WebUI (WiFuxx parity).
+#define BOOT_HOLD_MS       2000
+#define BOOT_POLL_MS       20
 
 static volatile bool scanner_active  = false;
 static volatile bool sniffer_active  = false;
@@ -534,6 +542,45 @@ static void menu_webui(void) {
     wifi_webui_render();
 }
 
+// Hold BOOT 2s anywhere (except already in WebUI) → clean reboot into WebUI.
+static void boot_button_task(void *arg) {
+    (void)arg;
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << PIN_BOOT_BUTTON,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+
+    ESP_LOGI(TAG, "BOOT button GPIO%d — hold %ds for Remote WebUI",
+             (int)PIN_BOOT_BUTTON, BOOT_HOLD_MS / 1000);
+
+    uint32_t held_ms = 0;
+    while (1) {
+        int level = gpio_get_level(PIN_BOOT_BUTTON);
+        if (level == 0) {   // active LOW = pressed
+            held_ms += BOOT_POLL_MS;
+            if (held_ms >= BOOT_HOLD_MS) {
+                if (webui_active) {
+                    // Already serving — ignore until release (no reboot loop).
+                    while (gpio_get_level(PIN_BOOT_BUTTON) == 0)
+                        vTaskDelay(pdMS_TO_TICKS(BOOT_POLL_MS));
+                    held_ms = 0;
+                    continue;
+                }
+                ESP_LOGW(TAG, "BOOT held %lums → Remote WebUI",
+                         (unsigned long)held_ms);
+                boot_mode_reboot(BOOT_DEST_WEBUI);
+            }
+        } else {
+            held_ms = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(BOOT_POLL_MS));
+    }
+}
+
 static void game_encoder_handler(encoder_event_t event) {
     if (event == ENCODER_LONG_PRESS) {
         game_pong_stop();
@@ -798,35 +845,34 @@ static void info_render(void) {
     line[16] = '\0';
     ssd1306_draw_string(0, 2, line);
 
+    uint16_t batt_mv = battery_read_mv();
+    uint8_t  batt_pct = battery_get_percentage();
+    if (battery_is_present() && batt_pct != BATTERY_INVALID)
+        snprintf(line, sizeof(line), "Batt:%umV %u%%",
+                 (unsigned)batt_mv, (unsigned)batt_pct);
+    else
+        snprintf(line, sizeof(line), "Batt: USB/none");
+    line[16] = '\0';
+    ssd1306_draw_string(0, 3, line);
+
     snprintf(line, sizeof(line), "Heap:%lu KB",
              (unsigned long)(esp_get_free_heap_size() / 1024));
     line[16] = '\0';
-    ssd1306_draw_string(0, 3, line);
+    ssd1306_draw_string(0, 4, line);
 
     uint32_t flash_size = 0;
     esp_flash_get_size(NULL, &flash_size);
     snprintf(line, sizeof(line), "Flash:%lu MB",
              (unsigned long)(flash_size / (1024 * 1024)));
     line[16] = '\0';
-    ssd1306_draw_string(0, 4, line);
-
-    esp_chip_info_t chip;
-    esp_chip_info(&chip);
-    snprintf(line, sizeof(line), "Rev:%d IDF:%s",
-             chip.revision, esp_get_idf_version());
-    line[16] = '\0';
     ssd1306_draw_string(0, 5, line);
 
     int64_t up_s = esp_timer_get_time() / 1000000LL;
     if (up_s < 0) up_s = 0;
-    int up_d  = (int)(up_s / 86400);
     int up_h  = (int)((up_s / 3600) % 24);
     int up_m  = (int)((up_s / 60) % 60);
     int up_sc = (int)(up_s % 60);
-    if (up_d > 0)
-        snprintf(line, sizeof(line), "Up:%dd %02dh%02dm", up_d, up_h, up_m);
-    else
-        snprintf(line, sizeof(line), "Up:%02dh %02dm %02ds", up_h, up_m, up_sc);
+    snprintf(line, sizeof(line), "Up:%02dh %02dm %02ds", up_h, up_m, up_sc);
     line[16] = '\0';
     ssd1306_draw_string(0, 6, line);
 
@@ -1066,6 +1112,12 @@ static void display_boot_splash(void) {
     vTaskDelay(pdMS_TO_TICKS(2000));
 }
 
+static void ota_github_task(void *arg) {
+    (void)arg;
+    ota_github_run();   // never returns (always reboots)
+    vTaskDelete(NULL);
+}
+
 void app_main(void) {
     ESP_LOGI(TAG, "WiFiend v1.0 - ESP32-C5 WiFi Hacking Handheld");
 
@@ -1124,7 +1176,22 @@ void app_main(void) {
     menu_init(main_menu, sizeof(main_menu) / sizeof(main_menu[0]));
     encoder_set_callback(encoder_event_handler);
 
-    ESP_LOGI(TAG, "Boot complete");
+    uint32_t boot_dest = boot_mode_consume();
+    xTaskCreate(boot_button_task, "boot_btn", 2048, NULL, 3, NULL);
+
+    if (boot_dest == BOOT_DEST_OTA) {
+        ESP_LOGI(TAG, "BOOT request: GitHub OTA update");
+        // Generous stack — TLS + HTTPS OTA is heavy. Never returns.
+        xTaskCreate(ota_github_task, "ota_gh", 10240, NULL, 5, NULL);
+        while (1) vTaskDelay(pdMS_TO_TICKS(10000));
+    }
+
+    if (boot_dest == BOOT_DEST_WEBUI) {
+        ESP_LOGI(TAG, "BOOT request: starting Remote WebUI");
+        menu_webui();
+    }
+
+    ESP_LOGI(TAG, "Boot complete fw=%s (BOOT 2s=WebUI)", ota_github_fw_version());
 
     while (1) {
         if (!scanner_active && !sniffer_active && !monitor_active && !attack_active && !ap_active && !sta_active && !chart_active && !info_active && !pmkid_active && !handshake_active && !captures_active && !webui_active && !game_active && !life_active && !react_active && !ble_scan_active && !ble_class_active && !ble_beacon_active && !ble_hunt_active && !ble_gatt_active && !ble_notify_active && !ble_spam_active && !ble_hid_active && !ble_advlog_active && !ble_nus_active && !fs_browser_active && !settings_ui_active && !espnow_active && !ieee154_active) menu_render();
@@ -1135,7 +1202,7 @@ void app_main(void) {
         if (pmkid_active) wifi_pmkid_render();
         if (handshake_active) wifi_handshake_render();
         if (captures_active && wifi_captures_needs_refresh()) wifi_captures_render();
-        if (webui_active && wifi_webui_needs_refresh()) wifi_webui_render();
+        if (webui_active) wifi_webui_render();
         if (sniffer_active) { wifi_sniff_render(); neopixel_pulse(COLOR_MAGENTA); }
         if (monitor_active) { wifi_monitor_render(); neopixel_pulse(COLOR_CYAN); }
         if (fs_browser_active && fs_browser_needs_refresh()) fs_browser_render();

@@ -15,6 +15,8 @@ static const char *TAG = "settings";
 #define KEY_LEGAL        "legal"
 #define KEY_BURST24      "burst24"
 #define KEY_BURST5       "burst5"
+#define KEY_HOME_SSID    "home_ssid"
+#define KEY_HOME_PASS    "home_pass"
 
 #define DEFAULT_LED      40
 #define DEFAULT_HOP24    400
@@ -39,6 +41,8 @@ static uint16_t hop_dwell_5    = DEFAULT_HOP5;
 static bool     legal_ack      = false;
 static uint8_t  burst_24       = DEFAULT_BURST24;
 static uint8_t  burst_5        = DEFAULT_BURST5;
+static char     home_ssid[33]  = {0};
+static char     home_pass[65]  = {0};
 
 static uint8_t  selected_idx   = 0;
 static uint8_t  scroll_offset  = 0;
@@ -72,6 +76,11 @@ void settings_load(void) {
     if (nvs_get_u8(h, KEY_BURST24, &u8) == ESP_OK) burst_24 = u8;
     if (nvs_get_u8(h, KEY_BURST5, &u8) == ESP_OK) burst_5 = u8;
 
+    size_t len = sizeof(home_ssid);
+    if (nvs_get_str(h, KEY_HOME_SSID, home_ssid, &len) != ESP_OK) home_ssid[0] = '\0';
+    len = sizeof(home_pass);
+    if (nvs_get_str(h, KEY_HOME_PASS, home_pass, &len) != ESP_OK) home_pass[0] = '\0';
+
     nvs_close(h);
     clamp_defaults();
     apply_led();
@@ -90,6 +99,8 @@ void settings_save(void) {
     nvs_set_u8(h, KEY_LEGAL, legal_ack ? 1 : 0);
     nvs_set_u8(h, KEY_BURST24, burst_24);
     nvs_set_u8(h, KEY_BURST5, burst_5);
+    nvs_set_str(h, KEY_HOME_SSID, home_ssid);
+    nvs_set_str(h, KEY_HOME_PASS, home_pass);
     nvs_commit(h);
     nvs_close(h);
     ESP_LOGI(TAG, "Settings saved");
@@ -120,6 +131,22 @@ void settings_set_burst_24(uint8_t n) { burst_24 = n; }
 
 uint8_t settings_get_burst_5(void) { return burst_5; }
 void settings_set_burst_5(uint8_t n) { burst_5 = n; }
+
+const char *settings_get_home_ssid(void) { return home_ssid; }
+const char *settings_get_home_pass(void) { return home_pass; }
+
+void settings_set_home_wifi(const char *ssid, const char *pass) {
+    if (ssid && ssid[0]) {
+        strncpy(home_ssid, ssid, sizeof(home_ssid) - 1);
+        home_ssid[sizeof(home_ssid) - 1] = '\0';
+    }
+    // Empty pass means "leave unchanged" (WiFuxx parity).
+    if (pass && pass[0]) {
+        strncpy(home_pass, pass, sizeof(home_pass) - 1);
+        home_pass[sizeof(home_pass) - 1] = '\0';
+    }
+    settings_save();
+}
 
 void settings_enter(void) {
     selected_idx  = 0;

@@ -167,26 +167,16 @@ static void register_commands(void) {
 }
 
 void cli_init(void) {
-    esp_console_repl_t *repl = NULL;
-    esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
-    repl_config.prompt = "wifiend> ";
-
-    esp_console_dev_uart_config_t hw_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
-
-    esp_err_t err = esp_console_new_repl_uart(&hw_config, &repl_config, &repl);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "UART REPL failed: %s", esp_err_to_name(err));
+    // Register commands on the existing USB/UART console without starting a
+    // second linenoise REPL (that fought the primary console and ate RAM).
+    esp_console_config_t cfg = ESP_CONSOLE_CONFIG_DEFAULT();
+    esp_err_t err = esp_console_init(&cfg);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "esp_console_init: %s", esp_err_to_name(err));
         return;
     }
 
     esp_console_register_help_command();
     register_commands();
-
-    err = esp_console_start_repl(repl);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "start REPL failed: %s", esp_err_to_name(err));
-        return;
-    }
-
-    ESP_LOGI(TAG, "CLI on UART0 (%s)", CLI_VERSION);
+    ESP_LOGI(TAG, "CLI commands registered (%s) — use idf.py monitor", CLI_VERSION);
 }

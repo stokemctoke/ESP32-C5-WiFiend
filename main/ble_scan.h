@@ -32,7 +32,7 @@ typedef struct {
 } ble_dev_info_t;
 
 // ---- shared scan core (disc + results), reused by all BLE views ----
-void ble_scan_disc_start(void);   // begin GAP discovery (once core is ready)
+bool ble_scan_disc_start(void);   // begin GAP discovery (once core is ready)
 void ble_scan_disc_stop(void);
 void ble_scan_clear(void);
 void ble_scan_lock(void);         // guard result reads from the host-task writer

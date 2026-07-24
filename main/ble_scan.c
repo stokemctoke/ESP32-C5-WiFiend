@@ -171,22 +171,28 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
 
 // ---------- disc lifecycle ----------
 
-void ble_scan_disc_start(void) {
-    if (s_discing) return;
+bool ble_scan_disc_start(void) {
+    if (s_discing) return true;
     if (!ble_core_is_ready()) {
         ESP_LOGW(TAG, "disc_start: core not ready");
-        return;
+        return false;
     }
+    // Cancel any leftover discovery before starting fresh.
+    ble_gap_disc_cancel();
+
     struct ble_gap_disc_params dp = {0};
-    dp.passive          = 0;   // active: solicit scan responses (better names)
-    dp.filter_duplicates = 0;  // keep RSSI updates for hunter / fresh data
+    dp.passive           = 0;   // active: solicit scan responses (better names)
+    dp.filter_duplicates = 0;   // keep RSSI updates for hunter / fresh data
+    dp.limited           = 0;
+    dp.filter_policy     = 0;
     int rc = ble_gap_disc(ble_core_own_addr_type(), BLE_HS_FOREVER, &dp, gap_event_cb, NULL);
     if (rc != 0 && rc != BLE_HS_EALREADY) {
         ESP_LOGE(TAG, "ble_gap_disc rc=%d", rc);
-        return;
+        return false;
     }
     s_discing = true;
     ESP_LOGI(TAG, "BLE discovery started");
+    return true;
 }
 
 void ble_scan_disc_stop(void) {

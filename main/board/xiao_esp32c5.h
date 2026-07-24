@@ -28,4 +28,7 @@
 // Onboard yellow user LED (optional; not wired on perfboard)
 #define PIN_USER_LED      GPIO_NUM_27
 
+// XIAO BOOT button (active LOW). Same as WiFuxx — NOT the encoder SW pin.
+#define PIN_BOOT_BUTTON   GPIO_NUM_28
+
 #endif

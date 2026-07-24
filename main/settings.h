@@ -26,6 +26,11 @@ void     settings_set_burst_24(uint8_t n);
 uint8_t  settings_get_burst_5(void);
 void     settings_set_burst_5(uint8_t n);
 
+// Home Wi-Fi used by GitHub OTA (join STA, check releases).
+const char *settings_get_home_ssid(void);
+const char *settings_get_home_pass(void);
+void        settings_set_home_wifi(const char *ssid, const char *pass);
+
 void settings_enter(void);
 void settings_exit(void);
 void settings_render(void);

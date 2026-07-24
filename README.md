@@ -6,17 +6,15 @@
 
 ![image](https://github.com/stokemctoke/ESP32-C5-WiFiend/blob/master/WiFiend_Github-Banner.png)
 
-> **WiFiend Xiao** — branch `wifiend-xiao`. Seeed XIAO ESP32-C5 perfboard handheld (OLED + encoder + NeoPixel + LiPo).  
+> **WiFiend Xiao** — branch `wifiend-xiao` / `master`. Seeed XIAO ESP32-C5 perfboard handheld (OLED + encoder + NeoPixel + LiPo).  
 > **WiFiend Dev** — branch `wifiend-dev` (when ready). Bigger board: SD card, GPS, wardriving, extra GPIO.
 
-> **Agent / session handoff:** [.claude/PROJECT.md](.claude/PROJECT.md) — read before coding; update when decisions or roadmap change.
-
 > **⚠️ Active Development**
-> The WiFi feature set is functional and field-tested on the perfboard prototype. Polishing and transfer-method work in progress. Expect occasional breaking changes between commits. Not yet ready for general distribution.
+> The WiFi feature set is functional and field-tested on the perfboard prototype. Expect occasional breaking changes between commits.
 
 An interactive, menu-driven WiFi pen-testing handheld built on the XIAO ESP32-C5. Navigate modes with a rotary encoder, monitor status on a 0.96" OLED, and control everything from a compact perfboard build powered by a 3.7V LiPo.
 
-Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame injection engine, channel scanner, client sniffer, evil-twin AP with captive portal, STA connect, PMKID capture, WPA handshake capture, and on-device capture management — all menu-driven from a single rotary encoder. Captures are written to LittleFS on the 8MB flash and exportable in hashcat-22000 format. A **Remote WebUI** serves a phone-friendly monitoring/scan/capture dashboard over its own soft-AP, a **Bluetooth** menu adds BLE recon (scanner, classifier, beacon decoder, RSSI hunter) via the NimBLE host running concurrently with Wi-Fi, and a **Games** menu (Pong, Conway's Game of Life, Reaction Test) with persistent hi-scores rounds out the build.
+Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame injection engine, channel scanner, client sniffer, evil-twin AP with captive portal, STA connect, PMKID capture, WPA handshake capture, and on-device capture management — all menu-driven from a single rotary encoder. Captures are written to LittleFS on the 8MB flash and exportable in hashcat-22000 format. A **Remote WebUI** serves a phone-friendly dashboard over its own soft-AP (or hold the XIAO **BOOT** button for 2 seconds), with GitHub-release OTA, BLE tools, RF/IoT recon, and a **Games** menu with persistent hi-scores.
 
 ---
 
@@ -42,6 +40,7 @@ Built from scratch in ESP-IDF C. Dual-band WiFi 6 (802.11ax) with a deauth frame
 | OLED SCL    | GPIO24 | I2C, 400kHz                                     |
 | LiPo sense  | GPIO6  | Onboard XIAO divider (ADC1 ch5); enable GPIO26  |
 | LiPo enable | GPIO26 | Drive HIGH during ADC sample (auto in firmware) |
+| BOOT button | GPIO28 | Hold 2s → reboot into Remote WebUI              |
 
 Pin map lives in [`main/board/xiao_esp32c5.h`](main/board/xiao_esp32c5.h).
 
@@ -49,12 +48,13 @@ Pin map lives in [`main/board/xiao_esp32c5.h`](main/board/xiao_esp32c5.h).
 
 ## Interaction
 
-| Action               | Result      |
-| -------------------- | ----------- |
-| Rotate CW            | Scroll down |
-| Rotate CCW           | Scroll up   |
-| Click (< 500ms)      | Select      |
-| Long press (≥ 500ms) | Go back     |
+| Action               | Result                                      |
+| -------------------- | ------------------------------------------- |
+| Rotate CW            | Scroll down                                 |
+| Rotate CCW           | Scroll up                                   |
+| Click (< 500ms)      | Select                                      |
+| Long press (≥ 500ms) | Go back                                     |
+| Hold BOOT 2s         | Reboot into Remote WebUI (`WiFiend-Remote`) |
 
 ---
 
@@ -74,7 +74,7 @@ The 0.96" SSD1306 has a yellow/blue physical colour split. The firmware uses thi
 └──────────────────┘
 ```
 
-The main menu is organised into categories. **WiFi** holds Scan, Client Sniff, AP Mode, Deauth, STA Connect, PMKID, Handshake, Captures, Remote WebUI and Ch Chart; **Bluetooth** holds BLE Scanner, Classifier, Beacons, and Device Hunter; **Games** holds Pong, Game of Life and Reaction Test; **Settings** holds Device Info. Submenus show a "Long-press = Back" hint.
+The main menu is organised into categories. **WiFi** holds Scan, Client Sniff, Monitor, AP Mode, Deauth, STA Connect, PMKID, Handshake, Captures, Remote WebUI and Ch Chart; **Bluetooth** holds Scanner, Classifier, Beacons, Hunter, GATT, Notify, Spam, BadBLE, Adv Logger, and NUS; **RF / IoT** holds ESP-NOW and 802.15.4 sniff; **Games** holds Pong, Game of Life and Reaction Test; **Settings** holds Device Info, Settings, and File Explorer. Submenus show a "Long-press = Back" hint.
 
 NeoPixel colour per mode: green = idle, yellow = WiFi scanning, cyan = results / captures view / WebUI, red = deauth, magenta = sniffer / STA connect / games, blue = BLE recon, and a rainbow cycle while Game of Life runs. Active scans (WiFi, sniffer, BLE) drive a smooth gamma-corrected "breathing" animation via a dedicated 40 Hz timer, so the LED visibly signals work in progress without coarse stepping.
 
@@ -99,6 +99,14 @@ idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
 
+First flash after a partition-table change needs a full erase:
+
+```bash
+idf.py -p /dev/ttyACM0 erase-flash flash
+```
+
+Or install a [GitHub Release](https://github.com/stokemctoke/ESP32-C5-WiFiend/releases) `WiFiend.bin` via the WebUI **Check for Update** flow (joins your home Wi-Fi and pulls the latest release) / manual upload.
+
 ---
 
 ## Progress
@@ -116,7 +124,7 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [x] EC11 rotary encoder — PCNT quadrature decoding, 10µs glitch filter, polled SW with 20ms debounce
 - [x] Boot splash — custom WiFiend graphic, fullscreen bitmap on boot
 - [x] First hardware prototype — perfboard v1 built and working (XIAO, OLED, encoder, NeoPixel, WS2812B SMD)
-- [x] **8MB flash + LittleFS** — custom partition table (3MB factory app + 4.9MB LittleFS storage). Capture logs persist across power cycles.
+- [x] **8MB flash + LittleFS** — dual 2 MB OTA slots (`ota_0` / `ota_1`) + ~3.875 MB LittleFS. Capture logs persist across power cycles.
 
 **WiFi Reconnaissance**
 
@@ -138,7 +146,8 @@ idf.py -p /dev/ttyACM0 flash monitor
 
 **Remote WebUI**
 
-- [x] **Remote WebUI dashboard** — dedicated `WiFiend-Remote` soft-AP serves a phone-friendly single-page web app (WebSocket-driven) at 192.168.4.1. Branded to match stokemctoke.com colours, with a live activity-log panel showing exactly what the device is doing. Tabs: **Scan** (run/browse APs on a real screen), **Capture** (PMKID/Handshake hunts + view/download saved `.hc22000` files straight to the phone), **Tools** (client sniffer, STA connect), **System** (device info, downloads, exit). Active radio-commandeering attacks (deauth, clone AP) are intentionally device-only — they take over the single radio and would drop the web link — so the dashboard stays reliable.
+- [x] **Remote WebUI dashboard** — dedicated `WiFiend-Remote` soft-AP serves a phone-friendly single-page web app (WebSocket-driven) at 192.168.4.1. Hold **BOOT 2s** for the same entry path as WiFuxx. Tabs: **Scan**, **Capture**, **Tools**, **BLE**, **System**. WiFi scan briefly uses APSTA so the SoftAP stays up; BLE scan warms NimBLE under SoftAP.
+- [x] **GitHub OTA** — System → Check for Update saves home Wi-Fi creds, reboots into STA, queries `releases/latest`, and installs `WiFiend.bin` when newer than `version.txt`. Manual `.bin` upload still available.
 
 **Games**
 
@@ -177,8 +186,9 @@ idf.py -p /dev/ttyACM0 flash monitor
 - [x] **LittleFS file explorer** — Settings → list / dump / delete
 - [x] **Settings screen** — LED brightness, hop dwell, legal ack, burst sizes (NVS)
 - [x] **Serial CLI** — `wifiend>` on UART0 (scan, battery, heap, mode, ls, cat, deauth stop)
-- [x] **WebUI OTA** — dual 2 MB OTA partitions; System tab upload + progress
+- [x] **WebUI OTA** — dual 2 MB OTA partitions; GitHub check + manual upload
 - [x] **WebUI BLE tab** — live BLE device list from phone browser
+- [x] **BOOT → WebUI** — GPIO28 hold 2s reboots into Remote WebUI
 - [x] **PMKID / Handshake render refresh** — main-loop redraw while active
 
 **Polish**
@@ -235,6 +245,10 @@ main/
 ├── captures_http.c    — HTTP serving of capture logs
 ├── wifi_webui.c/h     — Remote WebUI dashboard (soft-AP, HTTP + WebSocket)
 ├── webui_html.h       — embedded single-page web app (HTML/CSS/JS)
+├── ota_update.c/h     — streamed OTA write helpers (manual upload)
+├── ota_github.c/h     — GitHub releases/latest check + esp_https_ota
+├── boot_mode.c/h      — RTC boot destination (WebUI / OTA)
+├── version.txt        — PROJECT_VER / OTA semver compare
 ├── ble_core.c/h       — NimBLE host bring-up (init, sync, host task)
 ├── ble_scan.c/h       — shared GAP discovery + result table + Scanner UI
 ├── ble_ident.c/h      — pure helpers: device classifier + iBeacon/Eddystone decoders

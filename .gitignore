@@ -15,7 +15,7 @@ __pycache__/
 
 # Editor / OS
 .vscode/
-.claude/settings.local.json
+.claude/
 *.swp
 *~
 .DS_Store

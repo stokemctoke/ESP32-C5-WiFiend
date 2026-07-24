@@ -11,6 +11,7 @@
 
 static const char *TAG = "battery";
 
+// Match WiFuxx / Seeed XIAO ESP32-C5: /2 divider on GPIO6, gated by GPIO26.
 #define BATTERY_DIVIDER_RATIO  2
 #define BATTERY_SAMPLES        16
 #define BATTERY_EMA_DEN        8
@@ -20,17 +21,21 @@ static const char *TAG = "battery";
 static adc_oneshot_unit_handle_t batt_adc  = NULL;
 static adc_cali_handle_t         batt_cali = NULL;
 static adc_channel_t             batt_chan;
-static int                       batt_mv    = 0;
+static int                       batt_mv    = 0;   // smoothed battery millivolts
 static bool                      batt_valid = false;
+static bool                      batt_present = false;
 static int64_t                   last_update_us = 0;
 
+// Approximate single-cell LiPo resting-voltage -> SoC curve (same as WiFuxx).
+// Freshly-charged cells (~4.1 V at rest) read near full. Voltage fuel-gauging
+// sags under TX bursts; the EMA rides that out.
 static const struct { uint16_t mv; uint8_t pct; } lipo_curve[] = {
     {3270, 0}, {3600, 5}, {3700, 12}, {3730, 20}, {3750, 28}, {3770, 34}, {3790, 40},
     {3820, 47}, {3850, 55}, {3870, 62}, {3910, 70}, {3950, 77}, {3990, 83}, {4060, 90},
     {4110, 94}, {4160, 98}, {4200, 100},
 };
 
-static int mv_to_percent(int mv) {
+static int battery_percent_from_mv(int mv) {
     const int n = (int)(sizeof(lipo_curve) / sizeof(lipo_curve[0]));
     if (mv <= (int)lipo_curve[0].mv)     return 0;
     if (mv >= (int)lipo_curve[n - 1].mv) return 100;
@@ -44,11 +49,13 @@ static int mv_to_percent(int mv) {
     return 100;
 }
 
+// Enable divider, average a burst, convert to mV, undo the /2, EMA, disable
+// divider again to stop its drain. Same sequence as WiFuxx battery_update().
 static void battery_sample(void) {
     if (!batt_adc) return;
 
     gpio_set_level(PIN_BATTERY_ADC_EN, 1);
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(20));   // let the RC divider settle
 
     int acc = 0, n = 0, raw;
     for (int i = 0; i < BATTERY_SAMPLES; i++) {
@@ -65,16 +72,18 @@ static void battery_sample(void) {
     if (batt_cali) {
         if (adc_cali_raw_to_voltage(batt_cali, raw_avg, &mv_node) != ESP_OK) return;
     } else {
-        mv_node = raw_avg * 3300 / 4095;
+        mv_node = raw_avg * 3300 / 4095;   // rough fallback if uncalibrated
     }
 
     int sample_mv = mv_node * BATTERY_DIVIDER_RATIO;
     batt_mv = batt_valid ? batt_mv + (sample_mv - batt_mv) / BATTERY_EMA_DEN : sample_mv;
     batt_valid = true;
+    batt_present = (batt_mv >= BATTERY_PRESENT_MIN_MV);
     last_update_us = esp_timer_get_time();
 }
 
 void battery_init(void) {
+    // GPIO26 enables the XIAO on-board divider; keep low until we sample.
     gpio_config_t en = {
         .pin_bit_mask = 1ULL << PIN_BATTERY_ADC_EN,
         .mode         = GPIO_MODE_OUTPUT,
@@ -118,7 +127,10 @@ void battery_init(void) {
     ESP_LOGI(TAG, "Battery sense GPIO%d (ADC1 ch%d), enable GPIO%d",
              (int)PIN_BATTERY_ADC, (int)batt_chan, (int)PIN_BATTERY_ADC_EN);
 
+    // First sample before Wi-Fi starts — no TX sag on the initial reading.
     battery_sample();
+    ESP_LOGI(TAG, "Battery hardware: %s (%d mV)",
+             batt_present ? "detected" : "not detected", batt_mv);
 }
 
 void battery_tick(void) {
@@ -130,16 +142,19 @@ void battery_tick(void) {
     }
 }
 
+bool battery_is_present(void) {
+    return batt_present;
+}
+
 uint16_t battery_read_mv(void) {
-    battery_tick();
-    if (!batt_valid || batt_mv < BATTERY_PRESENT_MIN_MV) return 0;
+    // Read-only like WiFuxx battery_percent()/batt_mv — sampling is battery_tick().
+    if (!batt_valid || !batt_present) return 0;
     return (uint16_t)batt_mv;
 }
 
 uint8_t battery_get_percentage(void) {
-    battery_tick();
-    if (!batt_valid || batt_mv < BATTERY_PRESENT_MIN_MV) return BATTERY_INVALID;
-    int pct = mv_to_percent(batt_mv);
+    if (!batt_valid || !batt_present) return BATTERY_INVALID;
+    int pct = battery_percent_from_mv(batt_mv);
     if (pct < 0)   return 0;
     if (pct > 100) return 100;
     return (uint8_t)pct;

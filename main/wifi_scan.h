@@ -22,7 +22,10 @@ typedef struct {
 } wifi_ap_info_t;
 
 void wifi_scan_init(void);
+/** Full scan with OLED spinner (menu path). */
 uint16_t wifi_scan_start(void);
+/** Headless scan — no OLED animation (WebUI / background). */
+uint16_t wifi_scan_start_quiet(void);
 const wifi_ap_info_t *wifi_scan_get_results(uint16_t *count);
 void wifi_scan_scroll_up(void);
 void wifi_scan_scroll_down(void);

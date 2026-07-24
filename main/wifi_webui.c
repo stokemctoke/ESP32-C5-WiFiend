@@ -12,6 +12,9 @@
 #include "neopixel.h"
 #include "battery.h"
 #include "ota_update.h"
+#include "ota_github.h"
+#include "boot_mode.h"
+#include "settings.h"
 #include "ble_core.h"
 #include "ble_scan.h"
 #include "ble_ident.h"
@@ -161,27 +164,48 @@ static void start_ap_and_httpd(void) {
     cfg.ap.channel        = WEBUI_AP_CHANNEL;
     cfg.ap.authmode       = WIFI_AUTH_OPEN;
     cfg.ap.max_connection = AP_MAX_CONN;
+    cfg.ap.ssid_hidden    = 0;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &cfg));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    // SoftAP-only (same as evil twin). APSTA left STA half half-associated and
+    // often prevented phones from seeing / joining WiFiend-Remote reliably.
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_AP);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_mode AP failed: %s", esp_err_to_name(err));
+        return;
+    }
+    err = esp_wifi_set_config(WIFI_IF_AP, &cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_config AP failed: %s", esp_err_to_name(err));
+        return;
+    }
+    err = esp_wifi_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "wifi_start failed: %s", esp_err_to_name(err));
+        return;
+    }
 
     register_ws_event_handlers();
-    vTaskDelay(pdMS_TO_TICKS(200));
+    vTaskDelay(pdMS_TO_TICKS(400));
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers  = 12;
+    hcfg.max_uri_handlers  = 14;
+    hcfg.max_open_sockets  = 7;
     hcfg.max_resp_headers  = 8;
     hcfg.recv_wait_timeout = 30;
+    hcfg.send_wait_timeout = 30;
     hcfg.lru_purge_enable  = true;
+    hcfg.stack_size        = 8192;
 
     if (httpd_start(&s_httpd, &hcfg) != ESP_OK) {
-        ESP_LOGE(TAG, "httpd_start failed");
+        ESP_LOGE(TAG, "httpd_start failed (heap=%lu)",
+                 (unsigned long)esp_get_free_heap_size());
         s_httpd = NULL;
         return;
     }
     register_uri_handlers();
-    ESP_LOGI(TAG, "WebUI up: SSID=%s IP=%s", WEBUI_AP_SSID, WEBUI_AP_IP);
+    ESP_LOGI(TAG, "WebUI up: SSID=%s IP=%s heap=%lu",
+             WEBUI_AP_SSID, WEBUI_AP_IP,
+             (unsigned long)esp_get_free_heap_size());
 }
 
 static void stop_ap_and_httpd(void) {
@@ -287,6 +311,9 @@ static cJSON *build_state_json(void) {
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (running && running->label[0])
         cJSON_AddStringToObject(root, "ota_slot", running->label);
+
+    cJSON_AddStringToObject(root, "fw", ota_github_fw_version());
+    cJSON_AddStringToObject(root, "home_ssid", settings_get_home_ssid());
 
     return root;
 }
@@ -591,9 +618,35 @@ static uint16_t find_ap_idx(const char *bssid_str) {
 // ---------- FreeRTOS tasks for WiFi-restarting operations ----------
 
 static void scan_task(void *arg) {
-    emit_log("Scanning for APs...");
+    (void)arg;
+    // SoftAP-only mode has no STA iface — scans require STA or APSTA.
+    // Prefer APSTA so the phone can stay associated while we scan.
+    emit_log("WiFi scan: enabling STA (AP stays up)...");
+    broadcast_text("{\"event\":\"log\",\"msg\":\"Scanning APs…\"}");
     if (s_op_start_cb) s_op_start_cb("scan");
-    wifi_scan_start();
+
+    wifi_mode_t prev = WIFI_MODE_NULL;
+    esp_wifi_get_mode(&prev);
+
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "APSTA failed (%s) — falling back to STA restart",
+                 esp_err_to_name(err));
+        emit_log("APSTA failed — brief SoftAP restart for scan");
+        wifi_restart_begin();
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        esp_wifi_start();
+        wifi_scan_start_quiet();
+        wifi_restart_finish();
+    } else {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        wifi_scan_start_quiet();
+        // Restore AP-only SoftAP (more reliable join than permanent APSTA).
+        if (prev == WIFI_MODE_AP || prev == WIFI_MODE_NULL) {
+            esp_wifi_set_mode(WIFI_MODE_AP);
+        }
+    }
+
     if (s_op_stop_cb) s_op_stop_cb("scan");
     uint16_t cnt = 0;
     wifi_scan_get_results(&cnt);
@@ -604,14 +657,19 @@ static void scan_task(void *arg) {
 
 static void ble_scan_task(void *arg) {
     (void)arg;
-    emit_log("BLE scan starting...");
+    emit_log("BLE scan starting (heap=%lu)",
+             (unsigned long)esp_get_free_heap_size());
     ble_core_init();
 
-    for (int i = 0; i < 100 && !ble_core_is_ready(); i++)
+    // Prefer no WiFi power-save while BLE listens (coex friendlier).
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    for (int i = 0; i < 150 && !ble_core_is_ready(); i++)
         vTaskDelay(pdMS_TO_TICKS(100));
 
     if (!ble_core_is_ready()) {
-        emit_log("BLE core not ready");
+        emit_log("BLE core not ready (heap=%lu)",
+                 (unsigned long)esp_get_free_heap_size());
         s_ble_scanning = false;
         broadcast_text("{\"event\":\"ble_update\",\"scanning\":false,\"count\":0,\"devices\":[]}");
         vTaskDelete(NULL);
@@ -621,8 +679,16 @@ static void ble_scan_task(void *arg) {
     ble_scan_clear();
     if (s_op_start_cb) s_op_start_cb("ble");
     s_ble_scanning = true;
-    ble_scan_disc_start();
     push_ble_update();
+
+    if (!ble_scan_disc_start()) {
+        emit_log("BLE discovery failed to start");
+        s_ble_scanning = false;
+        if (s_op_stop_cb) s_op_stop_cb("ble");
+        push_ble_update();
+        vTaskDelete(NULL);
+        return;
+    }
 
     for (int tick = 0; tick < 60 && s_running && s_ble_scanning; tick++) {
         push_ble_update();
@@ -891,7 +957,7 @@ static void handle_command(httpd_req_t *req, const char *json_str) {
 
     } else if (!strcmp(cmd, "ble_scan_start")) {
         if (!s_ble_scanning)
-            xTaskCreate(ble_scan_task, "webui_ble", 4096, NULL, 4, NULL);
+            xTaskCreate(ble_scan_task, "webui_ble", 6144, NULL, 4, NULL);
 
     } else if (!strcmp(cmd, "ble_scan_stop")) {
         s_ble_scanning = false;
@@ -934,6 +1000,51 @@ static esp_err_t ws_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// POST /update — save home Wi-Fi, reboot into GitHub OTA mode (WiFuxx parity).
+// Body: {"ssid":"...","pass":"..."}  (pass optional = leave unchanged)
+static esp_err_t update_post_handler(httpd_req_t *req) {
+    char buf[256];
+    int to_read = req->content_len;
+    if (to_read <= 0 || to_read >= (int)sizeof(buf)) to_read = (int)sizeof(buf) - 1;
+
+    int received = 0;
+    while (received < to_read) {
+        int r = httpd_req_recv(req, buf + received, to_read - received);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) break;
+        received += r;
+    }
+    buf[received > 0 ? received : 0] = '\0';
+
+    cJSON *j = cJSON_Parse(buf);
+    if (!j) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
+        return ESP_FAIL;
+    }
+
+    cJSON *ssid_j = cJSON_GetObjectItem(j, "ssid");
+    cJSON *pass_j = cJSON_GetObjectItem(j, "pass");
+    const char *ssid = (ssid_j && cJSON_IsString(ssid_j)) ? ssid_j->valuestring : NULL;
+    const char *pass = (pass_j && cJSON_IsString(pass_j)) ? pass_j->valuestring : NULL;
+
+    if (ssid && ssid[0])
+        settings_set_home_wifi(ssid, pass);
+    cJSON_Delete(j);
+
+    if (settings_get_home_ssid()[0] == '\0') {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"no ssid\"}");
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "GitHub OTA requested (home AP '%s')", settings_get_home_ssid());
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    boot_mode_reboot(BOOT_DEST_OTA);
+    return ESP_OK;
+}
+
 // ---------- URI handler registration ----------
 
 static void register_uri_handlers(void) {
@@ -945,6 +1056,7 @@ static void register_uri_handlers(void) {
     httpd_uri_t r_entry   = { .uri = "/entry",          .method = HTTP_GET, .handler = entry_handler };
     httpd_uri_t r_caps    = { .uri = "/captures",       .method = HTTP_GET, .handler = captures_json_handler };
     httpd_uri_t r_ota     = { .uri = "/ota",            .method = HTTP_POST, .handler = ota_handler };
+    httpd_uri_t r_update  = { .uri = "/update",         .method = HTTP_POST, .handler = update_post_handler };
 
     httpd_register_uri_handler(s_httpd, &r_root);
     httpd_register_uri_handler(s_httpd, &r_ws);
@@ -953,6 +1065,7 @@ static void register_uri_handlers(void) {
     httpd_register_uri_handler(s_httpd, &r_entry);
     httpd_register_uri_handler(s_httpd, &r_caps);
     httpd_register_uri_handler(s_httpd, &r_ota);
+    httpd_register_uri_handler(s_httpd, &r_update);
 }
 
 // ---------- OLED render ----------
@@ -968,29 +1081,26 @@ void wifi_webui_render(void) {
     ssd1306_draw_string(0, 3, "192.168.4.1");
 
     char line[17];
-    if (s_restarting) {
+    if (!s_httpd) {
+        ssd1306_draw_string(0, 4, "HTTP FAIL");
+        ssd1306_draw_string(0, 5, "Check serial log");
+    } else if (s_restarting) {
         ssd1306_draw_string(0, 4, "WiFi restart..");
     } else if (s_clients == 0) {
-        ssd1306_draw_string(0, 4, "Waiting...");
+        ssd1306_draw_string(0, 4, "Join AP, then");
+        ssd1306_draw_string(0, 5, "open 192.168.4.1");
     } else {
         snprintf(line, sizeof(line), "%u connected", (unsigned)s_clients);
         ssd1306_draw_string(0, 4, line);
+        ssd1306_draw_string(0, 5, "UI serving");
     }
 
     uint8_t batt = battery_get_percentage();
     if (batt != 0xFF)
-        snprintf(line, sizeof(line), "Batt: %u%%", (unsigned)batt);
+        snprintf(line, sizeof(line), "Bat:%u%% LN>back", (unsigned)batt);
     else
-        snprintf(line, sizeof(line), "Batt: --");
-    ssd1306_draw_string(0, 5, line);
-
-    int64_t up_s = esp_timer_get_time() / 1000000LL;
-    int up_h = (int)((up_s / 3600) % 24);
-    int up_m = (int)((up_s / 60) % 60);
-    snprintf(line, sizeof(line), "Up:%02dh %02dm", up_h, up_m);
-    ssd1306_draw_string(0, 6, line);
-
-    ssd1306_draw_string(0, 7, "Long>menu");
+        snprintf(line, sizeof(line), "Bat:-- LN>back");
+    ssd1306_draw_string(0, 7, line);
     ssd1306_flush();
 }
 
@@ -1005,10 +1115,21 @@ void wifi_webui_enter(void) {
     if (s_running) return;
     s_clients    = 0;
     s_restarting = false;
+    s_httpd      = NULL;
+
     esp_wifi_stop();
+    vTaskDelay(pdMS_TO_TICKS(150));
+
     start_ap_and_httpd();
     s_running = true;
     s_refresh = true;
+
+    // Warm NimBLE early so Scan BLE is ready when the user taps it.
+    ble_core_init();
+
+    if (!s_httpd) {
+        ESP_LOGE(TAG, "WebUI HTTP server did not start");
+    }
 }
 
 void wifi_webui_stop(void) {
